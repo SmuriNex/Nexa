@@ -41,8 +41,13 @@ export function errorResponse(
     request_id: requestId,
   };
 
+  const headers = responseHeaders(cors, requestId);
+  if (error.retryAfterSeconds !== undefined) {
+    headers.set("Retry-After", String(error.retryAfterSeconds));
+  }
+
   return new Response(JSON.stringify(body), {
     status: error.status,
-    headers: responseHeaders(cors, requestId),
+    headers,
   });
 }

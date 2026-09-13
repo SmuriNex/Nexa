@@ -1,4 +1,4 @@
-import type { AIProviderFactory, AIProviderResponse } from "../ai/provider.ts";
+import type { AIHistoryMessage, AIProviderFactory, AIProviderResponse } from "../ai/provider.ts";
 import type { NexaConfig } from "../config/config.ts";
 import { resolveContext } from "../context/context-resolver.ts";
 import { asNexaError, NexaError } from "../errors/nexa-error.ts";
@@ -54,7 +54,12 @@ export class NexaCore {
     this.logger = dependencies.logger ?? logRequest;
   }
 
-  async chat(payload: unknown, suppliedRequestId?: string | null): Promise<
+  async chat(
+    payload: unknown,
+    suppliedRequestId?: string | null,
+    history: readonly AIHistoryMessage[] = [],
+    conversationId?: string,
+  ): Promise<
     ChatData & {
       requestId: string;
     }
@@ -77,6 +82,7 @@ export class NexaCore {
         instructions,
         context: request.context,
         requestId,
+        history,
       });
       const normalized = normalizeProviderResponse(
         providerResponse,
@@ -92,8 +98,10 @@ export class NexaCore {
       };
 
       this.logger({
+        stage: "provider",
         request_id: requestId,
         app,
+        ...(conversationId ? { conversation_id: conversationId } : {}),
         primary_provider: providerResponse.routing?.primaryProvider ??
           this.config.primaryProvider,
         provider: normalized.provider,
@@ -110,8 +118,10 @@ export class NexaCore {
       const safeError = asNexaError(error);
       const routing = error instanceof ProviderError ? error.routing : undefined;
       this.logger({
+        stage: "provider",
         request_id: requestId,
         app,
+        ...(conversationId ? { conversation_id: conversationId } : {}),
         primary_provider: routing?.primaryProvider ?? this.config.primaryProvider,
         ...(routing?.effectiveProvider ? { provider: routing.effectiveProvider } : {}),
         fallback_used: routing?.fallbackUsed ?? false,

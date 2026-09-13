@@ -42,6 +42,7 @@ export function handleHealth(request: Request): Response {
     headers.set("x-request-id", requestId);
 
     logRequest({
+      stage: "request",
       request_id: requestId,
       duration_ms: Math.max(0, Math.round(performance.now() - startedAt)),
       success: true,
@@ -51,6 +52,7 @@ export function handleHealth(request: Request): Response {
   } catch (error) {
     const safeError = asNexaError(error);
     logRequest({
+      stage: "request",
       request_id: requestId,
       duration_ms: Math.max(0, Math.round(performance.now() - startedAt)),
       success: false,

@@ -7,6 +7,12 @@ export interface AIProviderRequest {
   instructions: string;
   context?: Record<string, unknown>;
   requestId: string;
+  history?: readonly AIHistoryMessage[];
+}
+
+export interface AIHistoryMessage {
+  role: "user" | "assistant";
+  content: string;
 }
 
 export interface AIProviderResponse {

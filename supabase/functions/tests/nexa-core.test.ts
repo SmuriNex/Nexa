@@ -211,6 +211,14 @@ test("adaptador HTTP exige media type application/json exato", async () => {
         },
         body: JSON.stringify({ app: "nexa", message: "Olá" }),
       }),
+      {
+        authenticate: () =>
+          Promise.resolve({
+            userId: "a8b7f37d-5d10-4809-93b6-7eeb49939880",
+            accessToken: "test.token.value",
+            connection: { url: "http://127.0.0.1:54321", publishableKey: "test-only-public-key" },
+          }),
+      },
     );
     const body = await response.json();
 

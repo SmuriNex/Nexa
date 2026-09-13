@@ -1,5 +1,11 @@
 import { loadNexaConfig } from "../_shared/config/config.ts";
 import { createAIProvider } from "../_shared/ai/provider-factory.ts";
+import { type AuthenticatedPrincipal, authenticateRequest } from "../_shared/auth/authenticate.ts";
+import {
+  ConversationService,
+  type ConversationStore,
+} from "../_shared/conversations/conversation-service.ts";
+import { SupabaseConversationStore } from "../_shared/conversations/supabase-store.ts";
 import { NexaCore } from "../_shared/core/nexa-core.ts";
 import { asNexaError, NexaError } from "../_shared/errors/nexa-error.ts";
 import { corsHeaders, ensureOriginAllowed } from "../_shared/http/cors.ts";
@@ -8,6 +14,12 @@ import { logRequest } from "../_shared/logging/logger.ts";
 import { resolveRequestId } from "../_shared/request/request-id.ts";
 
 const MAX_HTTP_BODY_BYTES = 32_768;
+
+export interface ChatHandlerDependencies {
+  authenticate?: (request: Request) => Promise<AuthenticatedPrincipal>;
+  storeFactory?: (principal: AuthenticatedPrincipal) => ConversationStore;
+  coreFactory?: (config: ReturnType<typeof loadNexaConfig>) => NexaCore;
+}
 
 async function readJsonBody(request: Request): Promise<unknown> {
   const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
@@ -49,11 +61,13 @@ async function readJsonBody(request: Request): Promise<unknown> {
   }
 }
 
-export async function handleChat(request: Request): Promise<Response> {
+export async function handleChat(
+  request: Request,
+  dependencies: ChatHandlerDependencies = {},
+): Promise<Response> {
   const requestId = resolveRequestId(request.headers.get("x-request-id"));
   const startedAt = performance.now();
   let cors = new Headers();
-  let delegatedToCore = false;
   let primaryProvider: string | undefined;
 
   try {
@@ -76,29 +90,40 @@ export async function handleChat(request: Request): Promise<Response> {
       );
     }
 
+    const principal = await (dependencies.authenticate ?? authenticateRequest)(request);
     const payload = await readJsonBody(request);
-    const core = new NexaCore(config, {
+    const core = dependencies.coreFactory?.(config) ?? new NexaCore(config, {
       providerFactory: () => createAIProvider(config),
     });
-    delegatedToCore = true;
-    const { requestId: normalizedRequestId, ...data } = await core.chat(
-      payload,
-      requestId,
-    );
+    const store = dependencies.storeFactory?.(principal) ??
+      new SupabaseConversationStore(principal);
+    const service = new ConversationService(store, core, config.rateLimitPerMinute);
+    const data = await service.chat(payload, requestId);
 
-    return successResponse(data, normalizedRequestId, cors);
+    logRequest({
+      stage: "request",
+      request_id: requestId,
+      app: data.app,
+      conversation_id: data.conversation_id,
+      primary_provider: primaryProvider,
+      provider: data.provider,
+      fallback_used: data.provider !== primaryProvider,
+      duration_ms: Math.max(0, Math.round(performance.now() - startedAt)),
+      success: true,
+    });
+
+    return successResponse(data, requestId, cors);
   } catch (error) {
     const safeError = asNexaError(error);
-    if (!delegatedToCore) {
-      logRequest({
-        request_id: requestId,
-        ...(primaryProvider ? { primary_provider: primaryProvider } : {}),
-        fallback_used: false,
-        duration_ms: Math.max(0, Math.round(performance.now() - startedAt)),
-        success: false,
-        error_code: safeError.code,
-      });
-    }
+    logRequest({
+      stage: "request",
+      request_id: requestId,
+      ...(primaryProvider ? { primary_provider: primaryProvider } : {}),
+      fallback_used: false,
+      duration_ms: Math.max(0, Math.round(performance.now() - startedAt)),
+      success: false,
+      error_code: safeError.code,
+    });
     return errorResponse(safeError, requestId, cors);
   }
 }

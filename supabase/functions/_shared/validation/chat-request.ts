@@ -1,9 +1,9 @@
 import { NexaError } from "../errors/nexa-error.ts";
 import { type ChatRequest, type NexaApp, SUPPORTED_APPS } from "../types/chat.ts";
+import { isUuid } from "./uuid.ts";
 
 export const MAX_MESSAGE_LENGTH = 4_000;
 export const MAX_CONTEXT_BYTES = 16_384;
-export const MAX_CONVERSATION_ID_LENGTH = 128;
 
 const ALLOWED_FIELDS = new Set([
   "app",
@@ -114,7 +114,7 @@ export function validateChatRequest(payload: unknown): ChatRequest {
     }
 
     conversationId = payload.conversation_id.trim();
-    if (!conversationId || conversationId.length > MAX_CONVERSATION_ID_LENGTH) {
+    if (!isUuid(conversationId)) {
       throw new NexaError(
         "INVALID_CONVERSATION_ID",
         "O identificador da conversa é inválido.",

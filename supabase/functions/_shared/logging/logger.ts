@@ -1,6 +1,8 @@
 export interface RequestLog {
+  stage: "provider" | "request";
   request_id: string;
   app?: string;
+  conversation_id?: string;
   primary_provider?: string;
   provider?: string;
   fallback_used?: boolean;

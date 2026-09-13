@@ -81,10 +81,28 @@ O `package.json` usa a versão `0.1.0-dev`, preserva Supabase como dependência 
 
 `NEXA_PRIMARY_PROVIDER` e `NEXA_FALLBACK_PROVIDER` passam a expressar o roteamento. `NEXA_AI_PROVIDER` fica como alias legado apenas na ausência da variável primary; conflito entre ambas ou repetição do mesmo provider nas duas posições é configuração inválida.
 
+## 13/09/2026 — Auth, segurança e conversas persistentes
+
+**Origem:** autorização posterior do responsável para iniciar a próxima etapa funcional, limitada a Supabase Auth, autorização, segurança básica e conversas persistentes. As decisões D20 e D21 descrevem o incremento anterior e não o estado atual.
+
+| ID | Decisão |
+| --- | --- |
+| D33 | Usar Supabase Auth com email/senha. No `chat`, a identidade vem do JWT validado por `/auth/v1/user`; o endpoint não aceita `user_id` no corpo. Operações diretas concedidas no Data API continuam submetidas a RLS e conferem qualquer `user_id` contra `auth.uid()`. Não criar sistema próprio de senha nem perfil desnecessário. |
+| D34 | Exigir `verify_jwt = true` em `chat` e `conversations` e validar o usuário também dentro da função. Manter `health` público. |
+| D35 | Usar JWT do usuário e chave pública para consultas, listagem, exclusão e rate limit, preservando RLS. Usar service role somente server-side no commit atômico que precisa criar `assistant`; a RPC é negada a clientes e revalida papel, usuário, owner e app. |
+| D36 | Criar por migration somente `conversations`, `messages` e `rate_limit_windows`. Uma conversa pertence a um usuário e a um app imutável; excluir a conversa remove mensagens por cascade. |
+| D37 | Habilitar RLS nas três tabelas. Permitir ao autenticado apenas operações sobre conversas próprias e leitura/inserção de mensagem `user` nas suas conversas; mensagem `assistant` é reservada à RPC server-side, sem EXECUTE para `authenticated`. A tabela de rate limit não concede acesso direto ao cliente. |
+| D38 | Criar conversa implicitamente no primeiro `POST /chat` sem `conversation_id`; rejeitar conversa alheia como não encontrada e app divergente como conflito. Gerar título dos primeiros até 80 caracteres da primeira mensagem, sem chamada extra de IA. |
+| D39 | Persistir conversa e par user/assistant em uma única RPC depois de resposta bem-sucedida do provider. Se ele falhar, não persistir turno parcial; a tentativa ainda conta na quota. |
+| D40 | Enviar ao Core no máximo as 8 mensagens recentes e 12.000 caracteres, removendo as mais antigas quando necessário. Sem resumo ou memória longa. Ambos os providers recebem o mesmo histórico normalizado. |
+| D41 | Aplicar rate limit por usuário em janela fixa de 60 segundos, com UPSERT atômico no PostgreSQL. Padrão local de 6 tentativas/minuto, configurável por `NEXA_RATE_LIMIT_PER_MINUTE`; excesso retorna 429 e `Retry-After`. |
+| D42 | Nas Edge Functions, expor somente listagem paginada, detalhe com mensagens paginadas e exclusão; a criação do fluxo conversacional ocorre no chat. O Data API mantém apenas os grants por coluna exigidos pelas policies RLS, sem uma Edge Function CRUD adicional. |
+| D43 | Nesta etapa, qualquer usuário autenticado local pode testar os contextos `nexa`, `ascent` e `erp`. A autorização real de acesso aos produtos depende das respectivas integrações futuras. |
+
 ## Conflitos e pendências
 
 **Nenhum conflito documental anterior foi encontrado.** Não havia outras notas, decisões ou documentação Nexa a consolidar. O link de exemplo sem destino e o registro antigo do Obsidian são achados da inspeção, não decisões de produto conflitantes.
 
-A autorização da Fase 1 substituiu o limite operacional da antiga etapa exclusivamente documental, sem apagar seu registro histórico. Ela permitiu somente os incrementos stateless descritos acima. A autorização posterior para Supabase Local também permanece delimitada. Tools e Consensus continuam sendo possibilidades futuras, sem autorização de implementação.
+A autorização da Fase 1 substituiu o limite operacional da antiga etapa exclusivamente documental, sem apagar seu registro histórico. O incremento stateless e o roteamento precederam a autorização posterior de Auth e persistência registrada acima. A autorização para Supabase Local também permanece delimitada. Tools e Consensus continuam sendo possibilidades futuras, sem autorização de implementação.
 
-As escolhas técnicas restantes continuam pendentes em [[02 - Arquitetura#Cloud e decisões pendentes]] e nas seções “A definir” de [[03 - Ascent]] e [[04 - ERP]]. Para novos conflitos, registre data, fontes, pontos divergentes e situação da resolução, preservando a informação anterior.
+As escolhas técnicas restantes continuam pendentes em [[02 - Arquitetura#Providers e limites da fase]] e nas seções “A definir” de [[03 - Ascent]] e [[04 - ERP]]. Para novos conflitos, registre data, fontes, pontos divergentes e situação da resolução, preservando a informação anterior.

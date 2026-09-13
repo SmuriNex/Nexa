@@ -4,6 +4,7 @@ export const NEXA_VERSION = "0.1.0-dev";
 export const DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b";
 export const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
 export const DEFAULT_PROVIDER_TIMEOUT_MS = 30_000;
+export const DEFAULT_RATE_LIMIT_PER_MINUTE = 6;
 export const PROVIDER_NAMES = ["mock", "groq", "gemini"] as const;
 
 export type ProviderName = (typeof PROVIDER_NAMES)[number];
@@ -22,6 +23,7 @@ export interface NexaConfig {
   version: string;
   primaryProvider: ProviderName;
   fallbackProvider?: ProviderName;
+  rateLimitPerMinute: number;
   allowedOrigins: readonly string[];
   groq: {
     apiKey?: string;
@@ -39,7 +41,7 @@ interface DenoRuntime {
   env: EnvironmentReader;
 }
 
-function runtimeEnvironment(): EnvironmentReader {
+export function runtimeEnvironment(): EnvironmentReader {
   const runtime = globalThis as typeof globalThis & { Deno?: DenoRuntime };
 
   return {
@@ -72,6 +74,15 @@ function parseTimeout(value: string | undefined): number {
     throw configurationError();
   }
 
+  return parsed;
+}
+
+function parseRateLimit(value: string | undefined): number {
+  if (value === undefined) return DEFAULT_RATE_LIMIT_PER_MINUTE;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100) {
+    throw configurationError();
+  }
   return parsed;
 }
 
@@ -136,6 +147,7 @@ export function loadNexaConfig(
     version: NEXA_VERSION,
     primaryProvider,
     ...(fallbackProvider ? { fallbackProvider } : {}),
+    rateLimitPerMinute: parseRateLimit(optionalValue(reader, "NEXA_RATE_LIMIT_PER_MINUTE")),
     allowedOrigins: parseOrigins(optionalValue(reader, "NEXA_ALLOWED_ORIGINS")),
     groq: {
       apiKey: optionalValue(reader, "GROQ_API_KEY"),

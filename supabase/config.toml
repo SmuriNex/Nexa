@@ -384,7 +384,7 @@ deno_version = 2
 # [edge_runtime.secrets]
 # secret_key = "env(SECRET_VALUE)"
 
-# Public local endpoints for the stateless Phase 1 core. Authentication must be reviewed before cloud use.
+# Health is public; all conversation data requires an authenticated user.
 [functions.health]
 enabled = true
 verify_jwt = false
@@ -392,8 +392,13 @@ entrypoint = "./functions/health/index.ts"
 
 [functions.chat]
 enabled = true
-verify_jwt = false
+verify_jwt = true
 entrypoint = "./functions/chat/index.ts"
+
+[functions.conversations]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/conversations/index.ts"
 
 [analytics]
 enabled = true

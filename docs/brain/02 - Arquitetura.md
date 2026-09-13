@@ -1,165 +1,115 @@
 # Arquitetura
 
-Esta é a arquitetura implementada da [[00 - Nexa|Nexa]], atualizada e validada localmente em 13/09/2026. O núcleo continua deliberadamente stateless e ainda não integra clientes, usuários ou dados reais.
+A Nexa usa Supabase Auth, Edge Functions e PostgreSQL local para conversas persistentes. A camada de IA continua separada da autenticação e do armazenamento. Ascent e ERP permanecem somente contextos de instrução; não há integração com dados ou permissões desses produtos.
 
 ## Fluxo implementado
 
 ```mermaid
 flowchart TD
-    Ascent["Ascent — cliente futuro"] --> Chat["Nexa API — Edge Function chat"]
-    ERP["ERP — cliente futuro"] --> Chat
-    App["Aplicativo Nexa — futuro"] --> Chat
-    Chat --> HTTP["Validação HTTP e contrato Nexa"]
-    HTTP --> Core["Nexa Core"]
-    Core --> Context["Context Resolver"]
-    Context --> Instructions["Instruction Builder"]
-    Instructions --> Contract["AIProvider"]
-    Contract --> Router["ProviderRouter"]
-    Router -->|"primary"| Groq["GroqProvider"]
-    Router -->|"um fallback técnico elegível"| Gemini["GeminiProvider"]
-    Router -->|"seleção explícita / offline"| Mock["MockProvider"]
-    Groq --> GroqModel["Modelo externo Groq"]
-    Gemini --> GeminiModel["Gemini 3.8 Flash"]
-    Health["Edge Function health"] --> Runtime["Estado seguro do serviço"]
+    Client["Cliente autenticado"] --> Auth["Supabase Auth: email/senha e JWT"]
+    Auth --> Chat["Edge Function chat"]
+    Chat --> Identity["Validação do JWT em Auth /auth/v1/user"]
+    Identity --> Service["Conversation Service"]
+    Service --> DB["PostgREST com JWT do usuário e RLS"]
+    Service --> Core["Nexa Core"]
+    Core --> Context["Context Resolver e Instruction Builder"]
+    Context --> Router["ProviderRouter"]
+    Router --> Groq["Groq primary"]
+    Router --> Gemini["Gemini fallback elegível"]
+    Router --> Mock["Mock explícito em dev/test"]
+    Service --> RPC["RPC atômica: conversa + turno"]
+    RPC --> DB
+    Health["health público"] --> Status["Estado seguro"]
 ```
 
-As setas dos clientes representam a fronteira arquitetural futura. Ascent e ERP ainda não fazem chamadas reais. Os clientes conversam somente com a API Nexa; nenhum contrato público expõe o formato bruto de um fornecedor.
+O cliente chama apenas a API da Nexa. O corpo público não expõe formatos de provider. O `context` informado pelo cliente é dado não confiável, não concede permissões e não muda a identidade obtida pelo JWT.
 
-## Componentes
-
-| Componente | Implementação e responsabilidade |
+| Componente | Responsabilidade |
 | --- | --- |
-| Adaptador HTTP | `supabase/functions/chat/index.ts`: CORS, método, limite de corpo, JSON, configuração, Core e envelope HTTP. |
-| Health | `supabase/functions/health/index.ts`: comprova que a camada Nexa está ativa sem depender do provider ou expor ambiente completo. |
-| Nexa Core | `_shared/core/nexa-core.ts`: valida a solicitação, resolve o contexto, constrói instruções, obtém o provider injetado, chama-o e normaliza o resultado. Não importa implementações concretas de provider. |
-| Context Resolver | `_shared/context/context-resolver.ts`: reconhece somente `nexa`, `ascent` e `erp` e fornece a orientação própria de cada contexto. |
-| Instruction Builder | `_shared/instructions/instruction-builder.ts`: combina a identidade base da Nexa com a instrução do contexto e os limites de acesso. O conteúdo do Vault não é injetado. |
-| AIProvider | `_shared/ai/provider.ts`: contrato interno definido pela Nexa, com resposta capaz de identificar provider/modelo efetivos e roteamento. |
-| ProviderRouter | `_shared/ai/provider-router.ts`: chama o primary e, quando a falha é elegível, faz no máximo uma tentativa sequencial no fallback. |
-| MockProvider | Provider determinístico, offline e sem chave, mantido para seleção explícita em `development`/`test` e para os testes. |
-| GroqProvider | Adaptador HTTP com `fetch`, timeout, validação da resposta e erros categorizados. Não usa SDK. |
-| GeminiProvider | Adaptador REST com `fetch`, modelo configurável e padrão `gemini-3.8-flash`, timeout, validação da resposta e erros categorizados. Não usa SDK. |
-| Configuração | `_shared/config/config.ts`: lê ambiente, primary, fallback, allowlist CORS e opções de Groq/Gemini em um ponto central. |
-| Validação e erros | Tipos, limites, request ID, envelopes e erros seguros ficam em módulos pequenos sob `_shared/`; erros de provider usam uma taxonomia comum. |
+| `chat/index.ts` | CORS, método, autenticação, limite de corpo, JSON e envelope HTTP. |
+| `conversations/index.ts` | Listar, detalhar e excluir as próprias conversas com paginação. |
+| `health/index.ts` | Estado seguro do serviço sem exigir Auth. |
+| `_shared/auth/authenticate.ts` | Exigir Bearer JWT e confirmar identidade pelo endpoint de usuário do Supabase Auth. |
+| `_shared/conversations/conversation-service.ts` | Validar conversa/app, aplicar quota, carregar histórico curto, chamar o Core e gravar o turno. |
+| `_shared/conversations/supabase-store.ts` | Usar JWT/chave pública nas operações sob RLS e a service role somente no commit atômico server-side do turno. |
+| `_shared/core/nexa-core.ts` | Resolver contexto e instruções, chamar o provider injetado, normalizar resposta. |
+| `_shared/ai/` | Contrato próprio da Nexa, ProviderRouter, Groq, Gemini e Mock. |
+| `supabase/migrations/20260913170000_auth_conversations.sql` | Schema, RLS, funções e índices. |
 
-## Contrato de chat
+## Auth e autorização
 
-Entrada aceita:
+Supabase Auth guarda contas e senhas; a Nexa não cria tabela de senhas nem `profiles` nesta etapa. Login local por email/senha gera um access token. `chat` e `conversations` usam `verify_jwt = true` no gateway e confirmam o token dentro da função por `GET /auth/v1/user`. No contrato de `chat`, o `user_id` vem exclusivamente da identidade validada e não é aceito no corpo. `health` permanece público com `verify_jwt = false`.
 
-```ts
-interface ChatRequest {
-  app: "nexa" | "ascent" | "erp";
-  message: string;
-  conversation_id?: string;
-  context?: Record<string, unknown>;
-}
+Consultas, listagem, exclusão e rate limit usam o JWT do próprio usuário mais a chave pública/anon do stack, preservando RLS. A única exceção é `nexa_append_turn`: a Edge Function usa a service role server-side para gravar a resposta `assistant` junto do turno. Essa RPC não é executável por `authenticated`; recebe o ID já validado pelo Auth e revalida papel server-side, owner e app dentro da transação. A chave privilegiada não é devolvida nem registrada. Falta de token ou token inválido produz 401; indisponibilidade de Auth produz erro seguro. Identificadores de conversa alheia resultam em 404.
+
+Qualquer usuário autenticado **local** pode testar `nexa`, `ascent` e `erp`. A autorização real de acesso a Ascent/ERP ainda não existe e deve ser definida na integração futura dos produtos.
+
+## Schema e RLS
+
+A migration cria somente `public.conversations`, `public.messages` e `public.rate_limit_windows`. A identidade continua em `auth.users`; não há tabela de memória, perfil, dados de produto ou Tools.
+
+| Tabela | Campos e integridade principais | Acesso |
+| --- | --- | --- |
+| `conversations` | UUID, `user_id` FK para `auth.users`, `app` limitado a `nexa/ascent/erp`, título determinístico de até 80 caracteres, timestamps. `user_id` e `app` são imutáveis. | RLS: usuário autenticado seleciona, insere, altera título e exclui apenas as próprias linhas. |
+| `messages` | UUID, FK para conversa com `ON DELETE CASCADE`, role `user/assistant`, conteúdo, metadados opcionais de provider/modelo/request ID e timestamp. Não persiste system prompt nem reasoning. | RLS: usuário lê mensagens de suas conversas e insere somente mensagens `user` nelas. Mensagens `assistant` são gravadas pela RPC do turno. |
+| `rate_limit_windows` | Uma janela fixa por usuário e duração, com contador e timestamp. | RLS habilitada, sem grants ou policies de cliente; apenas RPC autenticada consome a quota. |
+
+As funções privilegiadas ficam em `nexa_private`, fora dos schemas expostos pelo PostgREST, com `search_path` vazio. O rate limit usa wrapper invoker concedido a `authenticated` e deriva a identidade de `auth.uid()`. O wrapper de `nexa_append_turn` é server-only, concedido apenas a `service_role`, e a implementação revalida o papel, o `p_user_id`, ownership e app dentro da transação. As policies impedem leitura, alteração, exclusão ou inserção cruzada entre usuários. A exclusão real de uma conversa remove suas mensagens por cascade.
+
+## Chat persistente
+
+`POST /functions/v1/chat` recebe:
+
+```json
+{"app":"nexa","message":"Olá","conversation_id":"UUID opcional","context":{}}
 ```
 
-Regras atuais:
+`app` aceita apenas `nexa`, `ascent` e `erp`. O corpo JSON tem limite de 32.768 bytes; `message` é aparada, obrigatória e limitada a 4.000 caracteres; `context` é objeto JSON opcional de até 16.384 bytes. Campos de topo desconhecidos são rejeitados. `conversation_id`, quando presente, precisa ser UUID. Não há `user_id` no contrato. Um `x-request-id` válido é preservado ou a Nexa gera UUID.
 
-- o corpo HTTP deve ser JSON e ter no máximo 32.768 bytes;
-- campos de topo desconhecidos são rejeitados;
-- `message` é aparada, obrigatória e limitada a 4.000 caracteres;
-- `context`, quando enviado, deve ser objeto JSON e ter no máximo 16.384 bytes;
-- `conversation_id`, quando enviado, deve ter de 1 a 128 caracteres; ele é apenas validado e não produz histórico nesta fase;
-- um `x-request-id` válido é preservado; na ausência ou invalidade, a Nexa gera UUID.
+Sem `conversation_id`, o serviço cria uma nova conversa para o usuário autenticado. Com ID, exige conversa própria e mesmo `app`: desconhecida ou alheia retorna 404; app divergente retorna 409. O título usa até os primeiros 80 caracteres da primeira mensagem, sem chamada extra de IA. Depois de validar e aplicar rate limit, o serviço carrega as últimas **8 mensagens**, reduzidas a no máximo **12.000 caracteres** pela remoção das mais antigas, e as entrega como histórico normalizado ao Core. Groq e Gemini traduzem o mesmo histórico para seus formatos próprios. Não há resumo nem memória longa.
 
-Sucesso:
+O Core chama o ProviderRouter, que executa o primary e, para falha técnica elegível, no máximo um fallback sequencial. **A conversa e as duas mensagens do turno são gravadas juntas pela RPC somente após o provider responder com sucesso.** Se o provider falhar, não fica uma mensagem de usuário órfã nem conversa nova vazia. Uma falha de armazenamento após resposta do provider retorna erro seguro; o turno não é confirmado parcialmente no banco. A tentativa ainda consome quota de rate limit.
+
+Resposta de sucesso:
 
 ```json
 {
   "ok": true,
   "data": {
-    "reply": "Nexa Mock recebeu sua mensagem no contexto ascent.",
-    "app": "ascent",
+    "conversation_id": "UUID",
+    "reply": "Resposta da Nexa",
+    "app": "nexa",
     "provider": "mock",
     "model": "mock"
   },
-  "request_id": "..."
+  "request_id": "UUID"
 }
 ```
 
-Erro:
+Erros seguem `{"ok":false,"error":{"code":"...","message":"..."},"request_id":"..."}` sem corpo bruto de fornecedor, prompt, token ou stack.
 
-```json
-{
-  "ok": false,
-  "error": {
-    "code": "INVALID_APP",
-    "message": "O aplicativo informado não é reconhecido pela Nexa."
-  },
-  "request_id": "..."
-}
-```
+## API de conversas
 
-## Identidade e contextos
+As Edge Functions abaixo exigem Bearer JWT. O envelope contém `ok`, `data` e `request_id`.
 
-A frase base “Você é Nexa, a inteligência artificial da NexPoint” pertence ao Instruction Builder. Providers recebem instruções já construídas e não definem a identidade do produto.
+| Método e rota | `data` | Paginação |
+| --- | --- | --- |
+| `GET /functions/v1/conversations` | `conversations` com `id, app, title, created_at, updated_at` e `pagination`. | `limit` padrão 20, intervalo 1–50; `offset` padrão 0, até 10.000. |
+| `GET /functions/v1/conversations/{uuid}` | `conversation`, `messages` e `pagination`. | `limit` padrão 50, intervalo 1–100; `offset` padrão 0, até 10.000. |
+| `DELETE /functions/v1/conversations/{uuid}` | `conversation_id` e `deleted: true`. | Exclusão real; mensagens removidas por cascade. |
 
-- `nexa`: contexto geral interno para testes e futuro aplicativo próprio;
-- `ascent`: Coach geral, limitado aos dados enviados na chamada, sem Tools ou conhecimento automático do usuário; inclui limite básico contra diagnóstico médico inventado;
-- `erp`: suporte técnico básico, sem alegar acesso a banco, movimentações, logs, telas, permissões, arquivos ou Tools.
+As listagens não trazem todas as mensagens. Conversa inexistente ou alheia retorna 404. Não há Edge Function separada para criar conversa: o fluxo de chat cria a conversa no primeiro turno. O Data API do Supabase continua expondo operações concedidas por coluna em `conversations` e inserção direta de mensagens `user`, sempre limitadas por RLS e `auth.uid()`; por isso um cliente REST fornece o próprio `user_id`, que a policy confere contra o JWT.
 
-O `context` opcional é tratado como dado não confiável e permanece separado das instruções de sistema.
+## Limites, CORS e privacidade
 
-## Providers
+`NEXA_RATE_LIMIT_PER_MINUTE` configura a quota por usuário autenticado, com padrão local de **6 tentativas por janela fixa de 60 segundos** (aceita 1–100). A RPC PostgreSQL serializa incrementos concorrentes. Exceder a quota devolve HTTP 429 com `Retry-After`. É uma proteção básica contra spam, não um sistema de billing ou quotas por produto. Limites de corpo, mensagem, validação estrita, JWT e allowlist CORS completam essa proteção.
 
-O Core depende somente de `AIProvider.generate(request)`. A factory concreta monta o `ProviderRouter`, preservando o Core e os clientes sem conhecimento das implementações. A configuração local atual usa Groq como primary e Gemini como fallback. Não há chamadas simultâneas: o Router aguarda a falha do primary e faz no máximo uma chamada ao fallback.
+`NEXA_ALLOWED_ORIGINS` é uma allowlist exata; `*` é rejeitado pela configuração. Chamadas sem `Origin` são aceitas para ferramentas locais. O plugin CORS do gateway Kong local já foi observado acrescentando wildcard/interceptando preflight; o `POST` com origem fora da allowlist foi recusado pela função. Essa política do gateway requer revisão antes de cloud. CORS não substitui Auth ou RLS.
 
-O MockProvider retorna texto previsível e modelo `mock`. O GroqProvider usa o endpoint de chat completions da Groq, modelo configurável com padrão `openai/gpt-oss-120b`, timeout padrão de 30 segundos e `fetch` nativo injetável. O GeminiProvider usa a API REST GenerateContent, envia a chave somente no header próprio do fornecedor, adota `gemini-3.8-flash` como padrão configurável e também usa timeout padrão de 30 segundos e `fetch` injetável. Ambos preservam as mesmas instruções de identidade e contexto construídas pela Nexa.
+Logs estruturados distinguem os estágios `provider` e `request` e usam apenas request ID, app, conversation ID quando disponível, provider e metadados operacionais seguros. Assim, sucesso do provider seguido de falha no commit não é confundido com sucesso HTTP. Os logs não registram email, mensagem, histórico, `context`, prompt, JWT, chave, corpo bruto de provider ou stack. Chaves locais ficam em `supabase/functions/.env` ignorado; `.env.example` contém somente nomes e valores não secretos.
 
-A política de roteamento é fechada e categorizada:
+## Providers e limites da fase
 
-| Situação do primary | Fallback |
-| --- | --- |
-| `RATE_LIMITED`, `TIMEOUT`, `NETWORK_ERROR`, `PROVIDER_UNAVAILABLE` ou `INVALID_PROVIDER_RESPONSE` | Elegível para uma única tentativa sequencial. |
-| `AUTH_ERROR`, `CONFIG_ERROR`, `PROVIDER_REJECTED` ou `UNKNOWN_PROVIDER_ERROR` | Não elegível; o erro seguro é devolvido sem trocar de provider. |
+Groq é primary local, com modelo configurável e padrão `openai/gpt-oss-120b`. Gemini é fallback configurado, com modelo padrão `gemini-3.8-flash`. Ambos usam `fetch` nativo, timeout e erros categorizados. Mock é selecionável explicitamente em desenvolvimento/teste para operação offline. Fallback só ocorre para rate limit do fornecedor, timeout, erro de rede, indisponibilidade ou resposta tecnicamente inválida. Erros de autenticação/configuração do provider, recusas de segurança e erros desconhecidos não acionam fallback. Em `development` e `test`, a exceção explícita `PRIMARY_NOT_CONFIGURED` permite usar um fallback configurado quando o primary não tem credencial; em produção, isso encerra a chamada como erro de configuração. O Router nunca consulta os dois simultaneamente.
 
-`INVALID_PROVIDER_RESPONSE` representa uma resposta tecnicamente malformada. Recusa ou bloqueio de segurança do fornecedor é `PROVIDER_REJECTED` e não aciona fallback, evitando contornar a decisão de segurança. Se o primary estiver sem credencial em `development` ou `test`, o Router pode seguir para um fallback configurado com o motivo `PRIMARY_NOT_CONFIGURED`; em produção, a mesma ausência encerra a chamada como erro de configuração. Um fallback sem credencial nunca é usado.
-
-A API nunca devolve corpo bruto, chave, prompt ou stack do fornecedor. A resposta pública identifica somente provider/modelo efetivos; o resultado interno também carrega metadados seguros usados nos logs de roteamento. Um eventual Consensus entre modelos permanece uma hipótese futura e não faz parte deste Router.
-
-## Configuração, CORS e autenticação
-
-Variáveis documentadas em `.env.example`:
-
-```dotenv
-NEXA_ENV=development
-NEXA_PRIMARY_PROVIDER=groq
-NEXA_FALLBACK_PROVIDER=gemini
-NEXA_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000
-GROQ_API_KEY=
-GROQ_MODEL=openai/gpt-oss-120b
-GROQ_TIMEOUT_MS=30000
-GEMINI_API_KEY=
-GEMINI_MODEL=gemini-3.8-flash
-GEMINI_TIMEOUT_MS=30000
-```
-
-`NEXA_PRIMARY_PROVIDER` é obrigatório. `NEXA_AI_PROVIDER` permanece somente como alias legado quando a variável nova não foi informada. Valores conflitantes são rejeitados, assim como primary e fallback iguais. O Mock precisa ser selecionado explicitamente e não é aceito em produção. Segredos locais ficam no `.env` ignorado das Edge Functions e não são documentados com valores.
-
-O código rejeita `*` na configuração e aplica uma allowlist exata. Chamadas sem `Origin` são aceitas para ferramentas locais. No teste pelo gateway local, o plugin CORS do Kong interceptou `OPTIONS` e acrescentou `Access-Control-Allow-Origin: *` às respostas; uma requisição `POST` com origem fora da allowlist ainda chegou à função e foi rejeitada com HTTP 403. A política do gateway precisa ser revisada antes de qualquer uso cloud.
-
-`health` e `chat` usam `verify_jwt = false` porque Supabase Auth está fora deste incremento e o fluxo local precisava funcionar sem credenciais. Portanto, os endpoints são públicos no ambiente local atual; essa configuração exige revisão junto da autenticação antes de produção.
-
-Os logs estruturados incluem apenas request ID, app validado, primary, provider efetivo, uso e motivo de fallback, duração, sucesso e código de erro. Mensagem, contexto, prompt, tokens, chaves, corpos de fornecedor e stack não são registrados.
-
-## Estado e persistência
-
-O fluxo é stateless. Não existem tabelas, migrations, usuários, conversas, mensagens, memória ou Tools. Consulta direta ao PostgreSQL após a implementação confirmou que `public` continua sem relações funcionais da Nexa.
-
-## Cloud e decisões pendentes
-
-Supabase Edge Functions foi escolhido para esta fundação local. Não houve login, link de projeto ou deploy, e a arquitetura de produção continua pendente.
-
-- autenticação, autorização e isolamento por usuário/produto;
-- persistência de conversas, histórico e memória;
-- contrato de dados e integração real com [[03 - Ascent]] e [[04 - ERP]];
-- eventuais Tools controladas e suas permissões;
-- política CORS do gateway e segurança para produção;
-- política de privacidade/redação antes de enviar dados reais a providers externos;
-- rate limit, controle de abuso e limite de payload no gateway;
-- operação cloud, observabilidade, custo e estratégia de deploy;
-- interface própria, HUD, voz e demais itens visuais futuros.
-
-Mudanças arquiteturais relevantes devem ser registradas em [[05 - Decisoes]]. O estado verificado está em [[06 - Estado atual]].
+Quando Groq ou Gemini está ativo, a mensagem e o `context` fornecidos são enviados ao provider selecionado; a política de minimização e redação para dados reais permanece pendente. Sem `Content-Length`, o adaptador ainda carrega o corpo antes de medir 32 KiB, portanto um gateway futuro também deve impor o limite antes da Edge Function. Não há dados reais de Ascent/ERP, Tools, memória longa, embeddings, Consensus, frontend ou cloud/deploy. Permanecem pendentes as permissões específicas dos produtos, CORS do gateway em cloud, observabilidade/custos e operação de produção. Registros de decisão estão em [[05 - Decisoes]]; verificações da implementação ficam em [[06 - Estado atual]].

@@ -189,10 +189,16 @@ export class GeminiProvider implements AIProvider {
           systemInstruction: {
             parts: [{ text: request.instructions }],
           },
-          contents: [{
-            role: "user",
-            parts: [{ text: buildProviderUserContent(request) }],
-          }],
+          contents: [
+            ...(request.history ?? []).map((item) => ({
+              role: item.role === "assistant" ? "model" : "user",
+              parts: [{ text: item.content }],
+            })),
+            {
+              role: "user",
+              parts: [{ text: buildProviderUserContent(request) }],
+            },
+          ],
           generationConfig: {
             maxOutputTokens: 1024,
             thinkingConfig: { includeThoughts: false },

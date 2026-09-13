@@ -1,12 +1,14 @@
 export class NexaError extends Error {
   readonly code: string;
   readonly status: number;
+  readonly retryAfterSeconds?: number;
 
-  constructor(code: string, message: string, status: number) {
+  constructor(code: string, message: string, status: number, retryAfterSeconds?: number) {
     super(message);
     this.name = "NexaError";
     this.code = code;
     this.status = status;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 

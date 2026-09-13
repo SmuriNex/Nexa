@@ -28,7 +28,7 @@ export function corsHeaders(
   const headers = new Headers({
     "Access-Control-Allow-Headers": ALLOWED_HEADERS,
     "Access-Control-Allow-Methods": [...methods, "OPTIONS"].join(", "),
-    "Access-Control-Expose-Headers": "x-request-id",
+    "Access-Control-Expose-Headers": "x-request-id, Retry-After",
     "Access-Control-Max-Age": "86400",
     Vary: "Origin",
   });

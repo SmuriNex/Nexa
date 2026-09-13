@@ -115,12 +115,11 @@ export class ProviderError extends NexaError {
   readonly fallbackEligible: boolean;
   readonly configurationIssue?: ProviderConfigurationIssue;
   readonly upstreamStatus?: number;
-  readonly retryAfterSeconds?: number;
   readonly routing?: ProviderRoutingMetadata;
 
   constructor(options: ProviderErrorOptions) {
     const definition = DEFINITIONS[options.kind];
-    super(definition.publicCode, definition.message, definition.status);
+    super(definition.publicCode, definition.message, definition.status, options.retryAfterSeconds);
     this.name = "ProviderError";
     this.kind = options.kind;
     this.provider = options.provider;
@@ -128,7 +127,6 @@ export class ProviderError extends NexaError {
     this.fallbackEligible = definition.fallbackEligible;
     this.configurationIssue = options.configurationIssue;
     this.upstreamStatus = options.upstreamStatus;
-    this.retryAfterSeconds = options.retryAfterSeconds;
     this.routing = options.routing;
   }
 }

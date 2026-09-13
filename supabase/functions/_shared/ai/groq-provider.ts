@@ -128,6 +128,10 @@ export class GroqProvider implements AIProvider {
           model: this.model,
           messages: [
             { role: "system", content: request.instructions },
+            ...(request.history ?? []).map((item) => ({
+              role: item.role,
+              content: item.content,
+            })),
             { role: "user", content: buildProviderUserContent(request) },
           ],
           stream: false,
