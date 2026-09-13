@@ -8,6 +8,7 @@ import { logRequest, type RequestLogger } from "../logging/logger.ts";
 import { resolveRequestId } from "../request/request-id.ts";
 import type { ChatData } from "../types/chat.ts";
 import { validateChatRequest } from "../validation/chat-request.ts";
+import type { MemoryContextEntry } from "../memories/types.ts";
 
 export interface NexaCoreDependencies {
   providerFactory: AIProviderFactory;
@@ -59,6 +60,7 @@ export class NexaCore {
     suppliedRequestId?: string | null,
     history: readonly AIHistoryMessage[] = [],
     conversationId?: string,
+    memories: readonly MemoryContextEntry[] = [],
   ): Promise<
     ChatData & {
       requestId: string;
@@ -83,6 +85,7 @@ export class NexaCore {
         context: request.context,
         requestId,
         history,
+        memories,
       });
       const normalized = normalizeProviderResponse(
         providerResponse,

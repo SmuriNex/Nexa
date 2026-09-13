@@ -400,6 +400,11 @@ enabled = true
 verify_jwt = true
 entrypoint = "./functions/conversations/index.ts"
 
+[functions.memories]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/memories/index.ts"
+
 [analytics]
 enabled = true
 port = 54427

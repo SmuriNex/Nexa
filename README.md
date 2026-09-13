@@ -1,6 +1,6 @@
 # Nexa
 
-A Nexa é a inteligência artificial da NexPoint. O backend local usa Supabase Auth, Edge Functions, conversas persistentes com RLS e ProviderRouter (Groq principal, Gemini fallback técnico ou Mock explícito para testes offline).
+A Nexa é a inteligência artificial da NexPoint. O backend usa Supabase Auth, Edge Functions, conversas persistentes, Memory V1 explícita com RLS e ProviderRouter (Groq principal, Gemini fallback técnico ou Mock explícito para testes offline).
 
 ## Rodar e testar localmente
 
@@ -28,8 +28,31 @@ O stack local usa:
 - `GET http://127.0.0.1:54421/functions/v1/conversations` — lista as próprias conversas (`limit` 1–50, padrão 20; `offset` 0–10.000);
 - `GET http://127.0.0.1:54421/functions/v1/conversations/{uuid}` — detalhe e mensagens (`limit` 1–100, padrão 50);
 - `DELETE http://127.0.0.1:54421/functions/v1/conversations/{uuid}` — exclui a conversa e suas mensagens.
+- `GET|POST http://127.0.0.1:54421/functions/v1/memories` — lista ou cria memórias explícitas do usuário;
+- `GET|PATCH|DELETE http://127.0.0.1:54421/functions/v1/memories/{uuid}` — consulta, edita ou exclui memória própria.
 
-Para uma chamada manual, crie uma conta fictícia no Supabase Auth local (Studio: `http://127.0.0.1:54423`), faça login via Auth e envie o access token em `Authorization: Bearer <JWT>` com a chave pública local em `apikey`. O contrato de chat é `{"app":"nexa","message":"Olá","conversation_id":"UUID opcional"}`; a resposta inclui `conversation_id`. Conta de outro usuário não acessa essa conversa. Ascent e ERP ainda são apenas contextos de instrução, sem integração com dados reais.
+Para uma chamada manual, crie uma conta fictícia no Supabase Auth local (Studio: `http://127.0.0.1:54423`), faça login via Auth e envie o access token em `Authorization: Bearer <JWT>` com a chave pública local em `apikey`. O contrato de chat é `{"app":"nexa","message":"Olá","conversation_id":"UUID opcional"}`; a resposta inclui `conversation_id`. Memórias são criadas de forma explícita, podem ser `global` ou de um app e nunca concedem permissões. Conta de outro usuário não acessa conversas nem memórias. Ascent e ERP ainda são apenas contextos de instrução, sem integração com dados reais.
+
+## Ambiente DEV cloud
+
+O DEV deve ser um projeto Supabase exclusivo da Nexa, separado do banco local, marcado com `NEXA_ENV=development` e preenchido somente com dados fictícios. **O projeto ainda não foi identificado, vinculado ou publicado:** a CLI desta máquina não está autenticada. Não execute os comandos abaixo até confirmar projeto, organização e ausência de dados importantes.
+
+Fluxo preparado para quando a CLI estiver autenticada e o projeto correto confirmado:
+
+```powershell
+npx.cmd supabase login
+npx.cmd supabase projects list
+npx.cmd supabase link --project-ref <NEXA_DEV_PROJECT_REF>
+npx.cmd supabase db push --dry-run
+npx.cmd supabase db push
+npx.cmd supabase secrets set --env-file <ARQUIVO_DEV_SEGURO_FORA_DO_GIT>
+npx.cmd supabase functions deploy health
+npx.cmd supabase functions deploy chat
+npx.cmd supabase functions deploy conversations
+npx.cmd supabase functions deploy memories
+```
+
+O arquivo seguro de DEV deve configurar somente os nomes necessários, como `NEXA_ENV`, providers/modelos, rate limit e origens permitidas, além de `GROQ_API_KEY` e `GEMINI_API_KEY`. Nunca registre valores no repositório. Se ainda não houver domínio web DEV, não invente uma origem; mantenha a validação por navegador pendente. Nunca use `db reset` no projeto remoto e nunca vincule este repositório a projetos do Ascent, ERP ou caixa.
 
 ## Documentação
 

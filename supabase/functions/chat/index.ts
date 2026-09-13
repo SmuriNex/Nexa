@@ -8,57 +8,19 @@ import {
 import { SupabaseConversationStore } from "../_shared/conversations/supabase-store.ts";
 import { NexaCore } from "../_shared/core/nexa-core.ts";
 import { asNexaError, NexaError } from "../_shared/errors/nexa-error.ts";
+import { readJsonBody } from "../_shared/http/body.ts";
 import { corsHeaders, ensureOriginAllowed } from "../_shared/http/cors.ts";
 import { errorResponse, successResponse } from "../_shared/http/response.ts";
 import { logRequest } from "../_shared/logging/logger.ts";
 import { resolveRequestId } from "../_shared/request/request-id.ts";
-
-const MAX_HTTP_BODY_BYTES = 32_768;
+import type { MemoryContextStore } from "../_shared/memories/types.ts";
+import { SupabaseMemoryStore } from "../_shared/memories/supabase-store.ts";
 
 export interface ChatHandlerDependencies {
   authenticate?: (request: Request) => Promise<AuthenticatedPrincipal>;
   storeFactory?: (principal: AuthenticatedPrincipal) => ConversationStore;
+  memoryStoreFactory?: (principal: AuthenticatedPrincipal) => MemoryContextStore;
   coreFactory?: (config: ReturnType<typeof loadNexaConfig>) => NexaCore;
-}
-
-async function readJsonBody(request: Request): Promise<unknown> {
-  const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
-  const mediaType = contentType.split(";", 1)[0]?.trim();
-  if (mediaType !== "application/json") {
-    throw new NexaError(
-      "UNSUPPORTED_MEDIA_TYPE",
-      "Use Content-Type application/json.",
-      415,
-    );
-  }
-
-  const declaredLength = Number(request.headers.get("content-length"));
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_HTTP_BODY_BYTES) {
-    throw new NexaError(
-      "PAYLOAD_TOO_LARGE",
-      "A solicitação excede o tamanho permitido.",
-      413,
-    );
-  }
-
-  const body = await request.text();
-  if (new TextEncoder().encode(body).byteLength > MAX_HTTP_BODY_BYTES) {
-    throw new NexaError(
-      "PAYLOAD_TOO_LARGE",
-      "A solicitação excede o tamanho permitido.",
-      413,
-    );
-  }
-
-  try {
-    return JSON.parse(body) as unknown;
-  } catch {
-    throw new NexaError(
-      "INVALID_JSON",
-      "O corpo da solicitação não contém JSON válido.",
-      400,
-    );
-  }
 }
 
 export async function handleChat(
@@ -97,7 +59,9 @@ export async function handleChat(
     });
     const store = dependencies.storeFactory?.(principal) ??
       new SupabaseConversationStore(principal);
-    const service = new ConversationService(store, core, config.rateLimitPerMinute);
+    const memoryStore = dependencies.memoryStoreFactory?.(principal) ??
+      new SupabaseMemoryStore(principal);
+    const service = new ConversationService(store, core, config.rateLimitPerMinute, memoryStore);
     const data = await service.chat(payload, requestId);
 
     logRequest({

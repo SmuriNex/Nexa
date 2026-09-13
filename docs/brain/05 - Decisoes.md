@@ -43,7 +43,7 @@ Em D08, vêm primeiro Nexa funcional, cloud, conversação, Ascent e ERP. Aplica
 - SMTP `54425` e POP3 `54426` permanecem apenas exemplos comentados; pooler continua desabilitado. `54428` fica sem publicação: não foi adicionado `analytics.vector_port`, ausente no arquivo gerado e marcado como legado/depreciado no código da CLI. O Vector deste stack não publica porta no host.
 - Preservar `project_id = "Nexa"` e as configurações não relacionadas a portas. Não parar/remover stacks de outros projetos nem alterar a configuração global do Docker para contornar a limitação de logs do Vector no Windows.
 
-Resultado, URLs e requisitos do Supabase Explorer em [[06 - Estado atual#Supabase Local — 12/09/2026]].
+O estado operacional e as URLs atuais estão em [[06 - Estado atual#LOCAL]].
 
 ## 12/09/2026 — primeiro núcleo técnico da Fase 1
 
@@ -99,10 +99,24 @@ O `package.json` usa a versão `0.1.0-dev`, preserva Supabase como dependência 
 | D42 | Nas Edge Functions, expor somente listagem paginada, detalhe com mensagens paginadas e exclusão; a criação do fluxo conversacional ocorre no chat. O Data API mantém apenas os grants por coluna exigidos pelas policies RLS, sem uma Edge Function CRUD adicional. |
 | D43 | Nesta etapa, qualquer usuário autenticado local pode testar os contextos `nexa`, `ascent` e `erp`. A autorização real de acesso aos produtos depende das respectivas integrações futuras. |
 
+## 13/09/2026 — hardening pré-cloud, Memory V1 e fronteira DEV
+
+**Origem:** autorização posterior do responsável para executar no mesmo incremento o hardening local, uma memória básica explícita e a preparação de um Supabase DEV exclusivo da Nexa, sem PROD, frontend, integrações reais, Tools, embeddings ou auto-memory.
+
+| ID | Decisão |
+| --- | --- |
+| D44 | Ler corpos HTTP incrementalmente e interromper no primeiro chunk que ultrapassar o limite. `chat` mantém 32.768 bytes e o CRUD de memória usa 8.192 bytes; `Content-Length` continua como rejeição antecipada, sem ser a única proteção. |
+| D45 | Manter a allowlist CORS exata nos handlers. O wildcard de `OPTIONS` foi atribuído ao plugin CORS sem configuração da rota `functions-v1` no Kong gerado pela CLI local 2.117.0, que encerra o preflight antes do handler. Não alterar Kong gerado nem Docker global; validar o gateway hospedado no DEV antes de publicar cliente web. |
+| D46 | Criar Memory V1 relacional e explícita, sem embeddings, vector search, RAG ou extração automática. Cada memória pertence a um usuário, tem scope `global` ou `app`, categoria curta e source básico; global exige app nulo e app aceita somente `nexa/ascent/erp`. |
+| D47 | Expor CRUD de memória autenticado usando JWT/chave pública e RLS, sem service role. A API V1 cria apenas `source=user_explicit`; owner, source e criação são imutáveis. Usuários podem editar ou excluir o próprio conteúdo e não veem memória alheia. |
+| D48 | Entregar ao Core somente memórias globais e do app atual, em prefixo mais recente limitado a 12 entradas e 6.000 caracteres. Conteúdo de memória permanece no conteúdo de usuário do provider e nunca entra na instrução `system`; memória é contexto não confiável e não concede role, identidade ou permissão. |
+| D49 | Separar LOCAL e DEV: LOCAL continua em loopback com dados descartáveis; DEV deverá ser projeto Supabase exclusivo da Nexa, marcado como `development`, com dados fictícios e migrations versionadas. PROD continua proibido. |
+| D50 | Não criar nem vincular projeto remoto sem inspeção autenticada da CLI e confirmação inequívoca de projeto/organização. Nesta execução a CLI não estava autenticada, portanto projeto Nexa DEV, organização, região, plano e estado de dados não puderam ser verificados; link, secrets, migrations remotas e deploy ficaram bloqueados nessa fronteira. |
+
 ## Conflitos e pendências
 
 **Nenhum conflito documental anterior foi encontrado.** Não havia outras notas, decisões ou documentação Nexa a consolidar. O link de exemplo sem destino e o registro antigo do Obsidian são achados da inspeção, não decisões de produto conflitantes.
 
-A autorização da Fase 1 substituiu o limite operacional da antiga etapa exclusivamente documental, sem apagar seu registro histórico. O incremento stateless e o roteamento precederam a autorização posterior de Auth e persistência registrada acima. A autorização para Supabase Local também permanece delimitada. Tools e Consensus continuam sendo possibilidades futuras, sem autorização de implementação.
+A autorização da Fase 1 substituiu o limite operacional da antiga etapa exclusivamente documental, sem apagar seu registro histórico. O incremento stateless e o roteamento precederam a autorização posterior de Auth, persistência e Memory V1 registrada acima. A autorização para Supabase Local também permanece delimitada. Tools e Consensus continuam sendo possibilidades futuras, sem autorização de implementação.
 
 As escolhas técnicas restantes continuam pendentes em [[02 - Arquitetura#Providers e limites da fase]] e nas seções “A definir” de [[03 - Ascent]] e [[04 - ERP]]. Para novos conflitos, registre data, fontes, pontos divergentes e situação da resolução, preservando a informação anterior.

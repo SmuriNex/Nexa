@@ -7,9 +7,11 @@ export class MockProvider implements AIProvider {
 
   generate(request: AIProviderRequest): Promise<AIProviderResponse> {
     const historyCount = request.history?.length ?? 0;
+    const memoryCount = request.memories?.length ?? 0;
     return Promise.resolve({
       reply: `Nexa Mock recebeu sua mensagem no contexto ${request.app}.` +
-        (historyCount > 0 ? ` Continuidade: ${historyCount} mensagens anteriores.` : ""),
+        (historyCount > 0 ? ` Continuidade: ${historyCount} mensagens anteriores.` : "") +
+        (memoryCount > 0 ? ` Memórias consideradas: ${memoryCount}.` : ""),
     });
   }
 }

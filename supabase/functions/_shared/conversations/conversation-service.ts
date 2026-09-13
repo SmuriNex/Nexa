@@ -3,6 +3,7 @@ import type { NexaCore } from "../core/nexa-core.ts";
 import { NexaError } from "../errors/nexa-error.ts";
 import type { ChatData, NexaApp } from "../types/chat.ts";
 import { validateChatRequest } from "../validation/chat-request.ts";
+import type { MemoryContextStore } from "../memories/types.ts";
 
 export const HISTORY_MAX_MESSAGES = 8;
 export const HISTORY_MAX_CHARACTERS = 12_000;
@@ -61,15 +62,18 @@ export class ConversationService {
   private readonly store: ConversationStore;
   private readonly core: NexaCore;
   private readonly rateLimitPerMinute: number;
+  private readonly memoryStore?: MemoryContextStore;
 
   constructor(
     store: ConversationStore,
     core: NexaCore,
     rateLimitPerMinute: number,
+    memoryStore?: MemoryContextStore,
   ) {
     this.store = store;
     this.core = core;
     this.rateLimitPerMinute = rateLimitPerMinute;
+    this.memoryStore = memoryStore;
   }
 
   async chat(payload: unknown, requestId: string): Promise<ChatData & { conversation_id: string }> {
@@ -101,11 +105,14 @@ export class ConversationService {
       );
     }
 
-    const history = createNew
-      ? []
-      : boundedHistory(await this.store.getRecentMessages(conversationId, HISTORY_MAX_MESSAGES));
+    const [history, memories] = await Promise.all([
+      createNew
+        ? Promise.resolve([])
+        : this.store.getRecentMessages(conversationId, HISTORY_MAX_MESSAGES).then(boundedHistory),
+      this.memoryStore?.listForChat(request.app) ?? Promise.resolve([]),
+    ]);
 
-    const result = await this.core.chat(request, requestId, history, conversationId);
+    const result = await this.core.chat(request, requestId, history, conversationId, memories);
 
     await this.store.commitTurn({
       conversationId,

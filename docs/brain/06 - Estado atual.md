@@ -1,97 +1,143 @@
 # Estado atual
 
 **Data:** 13/09/2026
-**Fase:** Fase 1 — Auth, autorização, segurança básica e conversas persistentes no Supabase Local.
 
-O código desta etapa implementa Supabase Auth com JWT obrigatório em `chat` e `conversations`, RLS e conversas persistentes. O fluxo local foi validado com dois usuários fictícios, incluindo isolamento cruzado e rate limit.
+**Fase:** Fase 1 — hardening pré-cloud e Memory V1 explícita.
 
-## Implementação
+**Ambientes:** LOCAL concluído e validado; DEV cloud bloqueado antes de qualquer vínculo porque a Supabase CLI não está autenticada.
+
+A Nexa local usa Supabase Auth, conversas persistentes, RLS, rate limit, histórico curto, Memory V1 e ProviderRouter. O fluxo foi validado com três usuários fictícios e MockProvider, sem chamadas externas e sem dados reais.
+
+## Implementação atual
 
 ```text
 Supabase Auth (email/senha)
-  → JWT no POST /functions/v1/chat
-  → validação do usuário em /auth/v1/user
-  → Conversation Service: ownership, app e rate limit
-  → histórico recente → Nexa Core → ProviderRouter → Groq/Gemini ou Mock
+  → JWT obrigatório em chat, conversations e memories
+  → Conversation Service
+      → ownership, app e rate limit
+      → histórico recente da conversa
+      → memórias globais + memórias do app atual
+  → Nexa Core
+      → regras estáticas de segurança
+      → memória como conteúdo de usuário não confiável
+  → ProviderRouter → Groq/Gemini ou Mock
   → RPC transacional → conversation + user message + assistant message
 ```
 
-`health` continua público. `chat` e `conversations` exigem Bearer JWT, com `verify_jwt = true` no gateway e validação adicional dentro da função. Consultas, exclusão e rate limit usam o token do usuário e RLS. Somente o commit atômico do turno usa a service role server-side para criar `assistant`; a RPC revalida papel, usuário, owner e app. O `chat` não aceita identidade no request body. O `context` continua dado não confiável e não concede permissão.
+`health` continua público. A identidade vem do JWT validado em `/auth/v1/user`; o corpo de `chat` não aceita `user_id`. Leituras e CRUD usam JWT/chave pública e RLS. A service role permanece restrita ao commit atômico do turno `assistant`; Memory V1 não a utiliza.
 
-Os contextos `nexa`, `ascent` e `erp` seguem reconhecidos. Qualquer usuário autenticado **local** pode testá-los nesta etapa; não há autorização vinculada a contas reais de Ascent ou ERP, nem leitura de dados desses produtos.
+Ascent e ERP continuam apenas valores de contexto. Não existe acesso às contas, bancos, permissões ou dados reais desses produtos.
 
-### Contrato e consistência
+## Hardening pré-cloud
 
-- `POST /functions/v1/chat` recebe `app`, `message`, `conversation_id` UUID opcional e `context` opcional. Sem ID, cria uma conversa ao concluir o turno. Com ID, a conversa deve pertencer ao usuário e manter o mesmo app.
-- Sucesso acrescenta `data.conversation_id` ao envelope existente com `reply`, `app`, `provider`, `model` e `request_id`.
-- A RPC `nexa_append_turn` grava conversa nova e par de mensagens user/assistant em uma transação **após** resposta do provider. Falha do provider não grava mensagem órfã nem conversa nova vazia. A tentativa consome quota.
-- Histórico entregue ao Core: últimas 8 mensagens, até 12.000 caracteres ao remover as mais antigas. Groq e Gemini recebem esse histórico normalizado; não há memória longa ou resumo.
-- App divergente em conversa própria gera 409. Conversa inexistente ou de outro usuário gera 404.
-- Título inicial deriva dos primeiros até 80 caracteres da primeira mensagem, sem chamada adicional de IA.
+### Corpo HTTP
 
-### API de conversas
+`chat` deixou de usar `request.text()` sem limite durante a leitura. O helper compartilhado:
 
-| Rota | Resposta mínima | Limites |
-| --- | --- | --- |
-| `GET /functions/v1/conversations` | `data.conversations` com ID, app, título e timestamps; `data.pagination`. | `limit` padrão 20, 1–50; `offset` padrão 0, 0–10.000. |
-| `GET /functions/v1/conversations/{uuid}` | `data.conversation`, `data.messages` e `data.pagination`. | `limit` padrão 50, 1–100; mesmo `offset`. |
-| `DELETE /functions/v1/conversations/{uuid}` | `data.conversation_id`, `data.deleted: true`. | Remove mensagens por cascade. |
+- rejeita antecipadamente `Content-Length` acima do teto;
+- lê `Request.body` incrementalmente;
+- mantém no máximo o limite permitido em memória;
+- cancela o stream no primeiro chunk excedente;
+- preserva `415`, `413` e `400`.
 
-Não há Edge Function de criação separada: o primeiro chat cria a conversa. Listagens não carregam todas as mensagens. O Data API continua disponível apenas para as operações por coluna concedidas na migration, sempre sob RLS; nele, qualquer `user_id` recebido é conferido contra `auth.uid()`.
+O teto é 32.768 bytes no chat e 8.192 bytes no CRUD de memória. Testes cobrem UTF-8 dividido entre chunks, limite exato, excesso sem `Content-Length`, cancelamento, JSON inválido e resposta HTTP 413.
 
-### Banco e políticas
+### CORS e Kong local
 
-A migration versionada `supabase/migrations/20260913170000_auth_conversations.sql` cria:
+Os handlers mantêm allowlist exata por `NEXA_ALLOWED_ORIGINS`, rejeitam `*` na configuração e devolvem 403 para origem não autorizada. O preflight chamado diretamente no handler retorna 204 com a origem permitida exata.
 
-| Tabela | Proteção |
+O wildcard observado no endpoint local foi classificado tecnicamente: a CLI Supabase 2.117.0 gera `functions-v1` com o plugin CORS do Kong sem configuração. No Kong 2.8.1, isso usa origem `*` e encerra `OPTIONS` antes do handler. Preflights permitidos e proibidos pelo gateway retornaram 200/wildcard e não trouxeram o `x-request-id` da função, enquanto chamadas reais proibidas chegaram ao handler e retornaram 403. Não foi feito override do Kong gerado, nem alteração no Docker Desktop. O comportamento hospedado ainda precisa ser testado no DEV; não se afirma paridade com o gateway local.
+
+### Vector local
+
+`supabase_vector_Nexa` continua reiniciando no Windows ao tentar acessar o Docker host. A Nexa não usa embeddings, vector search nem esse serviço nesta fase. DB, Auth, API e Edge Functions estão operacionais, portanto a falha do Vector fica aceita como limitação local. Docker TCP global não foi habilitado e nenhuma configuração global foi alterada.
+
+## Memory V1
+
+A migration `20260913190000_memory_v1.sql` cria `public.memories`:
+
+| Campo | Regra |
 | --- | --- |
-| `public.conversations` | RLS com SELECT/INSERT/UPDATE de título/DELETE somente da própria linha. FK para `auth.users`; app e owner imutáveis. |
-| `public.messages` | RLS: SELECT apenas de mensagens em conversa própria e INSERT direto somente de role `user` nela. `assistant` só pela RPC server-side, sem EXECUTE para `authenticated`. FK com `ON DELETE CASCADE`. |
-| `public.rate_limit_windows` | RLS ativa sem grants ou policies diretas para clientes; consumo por RPC autenticada e atômica. |
+| `id` | UUID gerado no banco. |
+| `user_id` | FK para `auth.users`, default `auth.uid()`, cascade; imutável. |
+| `scope` / `app` | `global` exige app nulo; `app` exige `nexa`, `ascent` ou `erp`. |
+| `category` | `preference`, `fact` ou `instruction`; nunca representa permissão. |
+| `source` | `user_explicit`, `app_context` ou `system`; API V1 cria somente `user_explicit` e não permite alterá-lo. |
+| `content` | Aparado, não vazio e limitado a 2.000 caracteres. |
+| timestamps | `created_at` imutável e `updated_at` mantido por trigger seguro. |
 
-Funções privilegiadas ficam em `nexa_private`, fora do schema exposto, com `search_path` vazio. O rate limit deriva o usuário de `auth.uid()` e é concedido a `authenticated`. `nexa_append_turn` é concedida somente a `service_role`, recebe o ID confirmado pelo Auth e revalida papel server-side, owner e app. Não foi necessária tabela `profiles`. O schema não inclui memória, embeddings, dados de Ascent/ERP ou Tools.
+RLS permite SELECT, INSERT, UPDATE e DELETE somente ao proprietário. Grants por coluna impedem o cliente autenticado de informar ou alterar `user_id` e `source`. `anon` e `service_role` não receberam acesso à tabela para o fluxo de memória. O índice `(user_id, updated_at DESC, id DESC)` atende listagem e contexto recente.
 
-### Limites e privacidade
+### API explícita
 
-`NEXA_RATE_LIMIT_PER_MINUTE` define a quota por usuário em janela fixa de 60 segundos. O padrão local é 6 tentativas; a configuração aceita 1–100. Excesso retorna 429 e `Retry-After`. O UPSERT não permite que uma chamada atrasada mova a janela para trás. Continuam os limites de 32.768 bytes por corpo, 4.000 caracteres por mensagem, 16.384 bytes para `context`, validação estrita de campos e allowlist CORS. Logs distinguem os estágios `provider` e `request` e não devem conter email, mensagem, histórico, JWT, contexto, prompt, chaves ou corpos brutos dos providers.
-
-O Kong local acrescentou `Access-Control-Allow-Origin: *` ao preflight, embora as funções tenham recusado `POST` e `GET` de origem não autorizada com 403 nos testes. A política do gateway exige revisão antes de cloud. CORS não substitui Auth nem RLS.
-
-## Validação
-
-Antes desta etapa, `npm.cmd run check` aprovou 69/69 testes do núcleo stateless e ProviderRouter. Groq respondeu em chamadas reais; Gemini chegou ao fornecedor, mas devolveu HTTP 503 nas tentativas controladas. Esses resultados **não** validam Auth, RLS ou persistência.
-
-| Verificação desta etapa | Resultado verificado |
+| Rota | Resultado |
 | --- | --- |
-| `npx.cmd supabase db reset` no stack local da Nexa | Migration final aplicada do zero; três tabelas com RLS ativa e seis policies. Tabelas vazias antes dos testes. |
-| Typecheck, lint, format e testes unitários | `npm.cmd run check` aprovado: typecheck, lint e format check sem erros; `npm test`: 96/96 aprovados. |
-| Integração local com login de usuários fictícios A e B | 10/10 testes opt-in aprovados, sem chamadas reais a Groq/Gemini. |
-| RLS cruzada: B não lê, altera, exclui ou insere em conversa A | Bloqueio confirmado; A mantém acesso aos próprios dados e também não lê conversa/mensagens de B. Chamada direta de `nexa_append_turn` por usuário autenticado foi rejeitada. |
-| Chat, segunda mensagem, histórico, app imutável e erro de provider | Duas mensagens de A geraram quatro registros user/assistant na mesma conversa; histórico usado. Falha controlada do provider não deixou registros parciais nem vazou segredo. |
-| 429 com `Retry-After`, health público e CORS | Rate limit por usuário e header confirmados; health público; POST/GET de origem proibida retornaram 403. Preflight do Kong ainda apresentou wildcard. |
+| `GET /functions/v1/memories` | Lista paginada própria: padrão 20, máximo 50, offset até 10.000. |
+| `GET /functions/v1/memories/{uuid}` | Detalhe próprio. |
+| `POST /functions/v1/memories` | Cria uma memória explícita; HTTP 201. |
+| `PATCH /functions/v1/memories/{uuid}` | Edita campos públicos; exige conjunto não vazio. |
+| `DELETE /functions/v1/memories/{uuid}` | Exclui a memória própria. |
 
-Depois do teste, a limpeza deixou `auth.users`, `conversations`, `messages` e `rate_limit_windows` com zero linhas.
+Todas exigem Auth. Memória inexistente ou alheia retorna 404. Não existe extração automática de conversas nem decisão do LLM para guardar dados.
 
-O teste de integração local opt-in fica em `tests/integration/local-integration.test.mjs` e cria contas fictícias temporárias. Ele deve ser executado somente com o Supabase Local da Nexa ativo e após `db reset`. Não usa Groq/Gemini reais para validar Auth e persistência.
+### Uso no chat
 
-## Ambiente local e segredos
+O chat seleciona apenas memórias globais e do app atual, em ordem `updated_at DESC, id DESC`. Envia o prefixo mais recente com no máximo 12 entradas e 6.000 caracteres. Global pode aparecer em `nexa`, `ascent` e `erp`; memórias de Ascent e ERP não cruzam entre si.
 
-O stack local usa API/Functions em `http://127.0.0.1:54421`, DB em `127.0.0.1:54422`, Studio em `http://127.0.0.1:54423` e e-mail local em `http://127.0.0.1:54424`. `health` usa `verify_jwt = false`; `chat` e `conversations` usam `verify_jwt = true`. A CLI está instalada como dependência de desenvolvimento; não houve link nem deploy cloud.
+O Instruction Builder contém uma regra estática que classifica memória como dado não confiável sem autoridade. O texto dinâmico é serializado somente no conteúdo `user` enviado ao provider, nunca em `systemInstruction`. Testes usam conteúdo malicioso e confirmam essa separação. Memória não concede role, identidade, permissão ou privilégio.
 
-### Supabase Local — 12/09/2026
+## Validação LOCAL
 
-A faixa reservada permanece 54420–54429: shadow DB 54420, API 54421, DB 54422, Studio 54423, e-mail 54424, Analytics 54427 e pooler 54429 desabilitado. SMTP/POP3 em 54425/54426 continuam apenas comentados e 54428 não é publicada. O container `supabase_vector_Nexa` continua reiniciando no Windows ao tentar acessar `host.docker.internal:2375`; os serviços necessários desta etapa estão operacionais. A extensão XTECH Supabase 0.0.4 observada na configuração anterior procura `supabase` diretamente, enquanto este projeto usa a CLI local via `npx.cmd`; nenhum PATH global ou configuração da extensão foi alterado.
+| Verificação | Resultado |
+| --- | --- |
+| `npx.cmd supabase db reset` | Duas migrations aplicadas do zero no projeto local `Nexa`. |
+| `npx.cmd supabase db lint --local --level warning` | Aprovado sem erro. |
+| Typecheck, lint, format e testes unitários | `npm.cmd run check`: 115/115 aprovados; lint em 45 arquivos e format-check em 46. |
+| Integração com Auth/RLS/chat/memory/hardening | 13/13 aprovados, usando três usuários fictícios e MockProvider. |
+| Memory CRUD | User A criou, listou, editou e excluiu; source forjado foi bloqueado. |
+| Isolamento | User B não leu, alterou ou excluiu memória de A pela API nem pelo Data API. |
+| Escopo no chat | Ascent recebeu global + Ascent; ERP recebeu global + ERP; o limite de 12 entradas foi respeitado. |
+| Memória maliciosa | Permaneceu fora da instrução de sistema e não foi ecoada pelo Mock. |
+| Sem memórias | Chat manteve a resposta normal. |
+| Body/CORS/rate limit | Stream acima de 32 KiB retornou 413; origens reais proibidas retornaram 403; quota retornou 429 com `Retry-After`. |
+| Persistência | Conversas, mensagens, histórico e rollback em falha de provider permaneceram aprovados. |
 
-As credenciais locais de provider permanecem em `supabase/functions/.env`, ignorado pelo Git. `.env.example` documenta apenas nomes e configurações sem valores reais. A implementação de Auth usa a chave pública e o JWT para operações sob RLS. A service role injetada pelo runtime é usada somente no commit server-side, nunca enviada ao cliente ou persistida; senha e token de usuário também não são armazenados na base da Nexa.
+Os testes não exigem Groq ou Gemini e não enviam tráfego a providers externos. Depois do cleanup, `auth.users`, `conversations`, `messages`, `memories` e `rate_limit_windows` foram consultadas diretamente e ficaram com zero linhas.
+
+## Ambientes
+
+### LOCAL
+
+- API e Functions: `http://127.0.0.1:54421`
+- DB: `127.0.0.1:54422`
+- Studio: `http://127.0.0.1:54423`
+- E-mail local: `http://127.0.0.1:54424`
+- Dados descartáveis e separados de qualquer cloud.
+- Secrets locais em `supabase/functions/.env`, ignorado pelo Git.
+
+### DEV cloud
+
+A Supabase CLI está instalada e o stack local responde, mas `supabase projects list` indicou ausência de autenticação da CLI. Por isso não foi possível confirmar se já existe um projeto remoto Nexa DEV, sua organização, região ou conteúdo.
+
+Nenhum `project-ref` foi gravado, nenhum projeto foi vinculado ou criado, nenhuma migration foi aplicada remotamente, nenhum secret remoto foi configurado e nenhuma Edge Function foi publicada. Também não houve usuário cloud, teste de Auth/RLS/chat/memory, chamada real a Groq/Gemini, mudança de plano ou ativação de billing.
+
+Depois de autenticar a CLI por um canal local seguro, é necessário:
+
+1. listar projetos e organizações;
+2. confirmar inequivocamente um projeto exclusivo Nexa DEV e a ausência de dados importantes;
+3. se ele não existir, decidir organização, região, plano e senha sem reutilizar outro produto;
+4. definir origens web DEV somente quando existirem domínios reais;
+5. revisar `db push --dry-run`, aplicar migrations versionadas, configurar secrets e publicar apenas `health`, `chat`, `conversations` e `memories`;
+6. validar JWT, RLS, CORS, rate limit, persistência e providers com dados fictícios.
 
 ## Limites restantes
 
-- Autorização real de usuários para Ascent/ERP e acesso minimizado aos dados desses produtos dependem das integrações futuras.
-- Quando Groq ou Gemini está ativo, `message` e `context` são enviados ao provider escolhido; a política de privacidade/redação de dados reais ainda precisa ser definida.
-- Sem `Content-Length`, a função carrega o corpo antes de medir 32 KiB; o gateway futuro também deve impor esse limite.
-- CORS do gateway, observabilidade/custos e operação cloud ainda não foram projetados para produção.
-- O container Vector local continua reiniciando no Windows por tentar alcançar `host.docker.internal:2375`; API, Auth, DB, Functions e Analytics permanecem operacionais.
-- Gemini respondeu HTTP 503 na validação anterior; uma resposta real bem-sucedida ainda não foi comprovada nesta etapa.
-- Não há memória longa, embeddings, RAG, Consensus, Tools, frontend, app próprio, Astra, HUD, voz ou agentes.
+- CORS do gateway hospedado não foi testado; o wildcard do Kong foi comprovado somente no stack local.
+- O helper limita o buffer mantido pela aplicação, mas qualquer buffering anterior do gateway/runtime precisa ser medido no DEV.
+- Não há domínio de cliente web DEV definido.
+- Quando Groq ou Gemini estiver ativo, mensagem, contexto e memórias aplicáveis serão enviados ao fornecedor; política de minimização e redação para dados reais continua pendente.
+- Groq e Gemini não foram chamados nesta etapa. O último teste anterior do Gemini retornou 503 e não prova disponibilidade atual.
+- Vector local continua reiniciando, aceito porque não é dependência da Nexa nesta fase.
+- Não há memória semântica, embeddings, vector database da Nexa, RAG complexo, auto-memory, Tools, Consensus, OpenAI/GPT, frontend, app próprio, Ascent/ERP reais, Astra, HUD, voz, agentes ou PROD.
 
-Não houve commit, push, link ou deploy nesta etapa. O estado final do Git deve ser conferido após todas as alterações.
+Nenhum commit ou push foi realizado neste incremento.

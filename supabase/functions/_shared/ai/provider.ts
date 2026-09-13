@@ -1,5 +1,6 @@
 import type { NexaApp } from "../types/chat.ts";
 import type { ProviderRoutingMetadata } from "../errors/provider-error.ts";
+import type { MemoryContextEntry } from "../memories/types.ts";
 
 export interface AIProviderRequest {
   app: NexaApp;
@@ -8,6 +9,7 @@ export interface AIProviderRequest {
   context?: Record<string, unknown>;
   requestId: string;
   history?: readonly AIHistoryMessage[];
+  memories?: readonly MemoryContextEntry[];
 }
 
 export interface AIHistoryMessage {
