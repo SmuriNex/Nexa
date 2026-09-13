@@ -1,0 +1,11 @@
+# Segredos locais e variantes de ambiente
+.env
+.env.*
+!/.env.example
+
+# Dependências e artefatos gerados, caso existam em fases futuras
+node_modules/
+dist/
+
+# Obsidian: preservar configurações do Vault; ignorar somente layout/sessão pessoal
+/docs/brain/.obsidian/workspace*.json

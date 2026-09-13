@@ -1,0 +1,24 @@
+{
+  "name": "nexa",
+  "version": "0.1.0-dev",
+  "private": true,
+  "description": "Núcleo conversacional da inteligência artificial Nexa, da NexPoint.",
+  "scripts": {
+    "supabase:start": "supabase start",
+    "supabase:stop": "supabase stop",
+    "supabase:status": "supabase status",
+    "functions:serve": "supabase functions serve --env-file .env.example",
+    "typecheck": "npx --yes deno@2.1.4 check --config supabase/functions/deno.json supabase/functions/health/index.ts supabase/functions/chat/index.ts supabase/functions/tests/nexa-core.test.ts",
+    "lint": "npx --yes deno@2.1.4 lint --config supabase/functions/deno.json supabase/functions",
+    "format:check": "npx --yes deno@2.1.4 fmt --check --config supabase/functions/deno.json supabase/functions",
+    "test": "node --test supabase/functions/tests/nexa-core.test.ts",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "supabase": "^2.117.0"
+  }
+}
