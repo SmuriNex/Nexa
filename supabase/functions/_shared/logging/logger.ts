@@ -1,7 +1,10 @@
 export interface RequestLog {
   request_id: string;
   app?: string;
+  primary_provider?: string;
   provider?: string;
+  fallback_used?: boolean;
+  fallback_reason?: string;
   duration_ms: number;
   success: boolean;
   error_code?: string;

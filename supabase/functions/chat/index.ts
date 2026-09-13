@@ -54,9 +54,11 @@ export async function handleChat(request: Request): Promise<Response> {
   const startedAt = performance.now();
   let cors = new Headers();
   let delegatedToCore = false;
+  let primaryProvider: string | undefined;
 
   try {
     const config = loadNexaConfig();
+    primaryProvider = config.primaryProvider;
     cors = corsHeaders(request, config, ["POST"]);
     ensureOriginAllowed(request, config);
 
@@ -90,6 +92,8 @@ export async function handleChat(request: Request): Promise<Response> {
     if (!delegatedToCore) {
       logRequest({
         request_id: requestId,
+        ...(primaryProvider ? { primary_provider: primaryProvider } : {}),
+        fallback_used: false,
         duration_ms: Math.max(0, Math.round(performance.now() - startedAt)),
         success: false,
         error_code: safeError.code,

@@ -3,6 +3,7 @@ import type { AIProvider, AIProviderRequest, AIProviderResponse } from "./provid
 export class MockProvider implements AIProvider {
   readonly name = "mock";
   readonly model = "mock";
+  readonly configured = true;
 
   generate(request: AIProviderRequest): Promise<AIProviderResponse> {
     return Promise.resolve({

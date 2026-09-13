@@ -2,6 +2,7 @@
 .env
 .env.*
 !/.env.example
+/supabase/functions/.env
 
 # Dependências e artefatos gerados, caso existam em fases futuras
 node_modules/

@@ -2,7 +2,11 @@ import { NexaError } from "../errors/nexa-error.ts";
 
 export const NEXA_VERSION = "0.1.0-dev";
 export const DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b";
-export const DEFAULT_GROQ_TIMEOUT_MS = 30_000;
+export const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
+export const DEFAULT_PROVIDER_TIMEOUT_MS = 30_000;
+export const PROVIDER_NAMES = ["mock", "groq", "gemini"] as const;
+
+export type ProviderName = (typeof PROVIDER_NAMES)[number];
 
 const DEFAULT_LOCAL_ORIGINS = [
   "http://127.0.0.1:3000",
@@ -16,9 +20,15 @@ export interface EnvironmentReader {
 export interface NexaConfig {
   environment: string;
   version: string;
-  aiProvider: string;
+  primaryProvider: ProviderName;
+  fallbackProvider?: ProviderName;
   allowedOrigins: readonly string[];
   groq: {
+    apiKey?: string;
+    model: string;
+    timeoutMs: number;
+  };
+  gemini: {
     apiKey?: string;
     model: string;
     timeoutMs: number;
@@ -44,18 +54,22 @@ function optionalValue(reader: EnvironmentReader, name: string): string | undefi
   return value ? value : undefined;
 }
 
+function configurationError(): NexaError {
+  return new NexaError(
+    "CONFIGURATION_ERROR",
+    "A configuração interna da Nexa é inválida.",
+    500,
+  );
+}
+
 function parseTimeout(value: string | undefined): number {
   if (value === undefined) {
-    return DEFAULT_GROQ_TIMEOUT_MS;
+    return DEFAULT_PROVIDER_TIMEOUT_MS;
   }
 
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1_000 || parsed > 120_000) {
-    throw new NexaError(
-      "CONFIGURATION_ERROR",
-      "A configuração interna da Nexa é inválida.",
-      500,
-    );
+    throw configurationError();
   }
 
   return parsed;
@@ -67,28 +81,71 @@ function parseOrigins(value: string | undefined): readonly string[] {
     : DEFAULT_LOCAL_ORIGINS;
 
   if (origins.length === 0 || origins.includes("*")) {
-    throw new NexaError(
-      "CONFIGURATION_ERROR",
-      "A configuração interna da Nexa é inválida.",
-      500,
-    );
+    throw configurationError();
   }
 
   return [...new Set(origins)];
 }
 
+function parseProvider(value: string): ProviderName {
+  const provider = value.toLowerCase();
+  if (!(PROVIDER_NAMES as readonly string[]).includes(provider)) {
+    throw configurationError();
+  }
+  return provider as ProviderName;
+}
+
+export function isDevelopmentEnvironment(environment: string): boolean {
+  return environment === "development" || environment === "test";
+}
+
 export function loadNexaConfig(
   reader: EnvironmentReader = runtimeEnvironment(),
 ): NexaConfig {
+  const environment = (optionalValue(reader, "NEXA_ENV") ?? "development").toLowerCase();
+  const configuredPrimary = optionalValue(reader, "NEXA_PRIMARY_PROVIDER");
+  const legacyPrimary = optionalValue(reader, "NEXA_AI_PROVIDER");
+
+  if (
+    configuredPrimary &&
+    legacyPrimary &&
+    configuredPrimary.toLowerCase() !== legacyPrimary.toLowerCase()
+  ) {
+    throw configurationError();
+  }
+
+  const primaryValue = configuredPrimary ?? legacyPrimary;
+  if (!primaryValue) {
+    throw configurationError();
+  }
+
+  const primaryProvider = parseProvider(primaryValue);
+  const fallbackValue = optionalValue(reader, "NEXA_FALLBACK_PROVIDER");
+  const fallbackProvider = fallbackValue ? parseProvider(fallbackValue) : undefined;
+
+  if (
+    primaryProvider === fallbackProvider ||
+    (!isDevelopmentEnvironment(environment) &&
+      (primaryProvider === "mock" || fallbackProvider === "mock"))
+  ) {
+    throw configurationError();
+  }
+
   return {
-    environment: optionalValue(reader, "NEXA_ENV") ?? "development",
+    environment,
     version: NEXA_VERSION,
-    aiProvider: (optionalValue(reader, "NEXA_AI_PROVIDER") ?? "mock").toLowerCase(),
+    primaryProvider,
+    ...(fallbackProvider ? { fallbackProvider } : {}),
     allowedOrigins: parseOrigins(optionalValue(reader, "NEXA_ALLOWED_ORIGINS")),
     groq: {
       apiKey: optionalValue(reader, "GROQ_API_KEY"),
       model: optionalValue(reader, "GROQ_MODEL") ?? DEFAULT_GROQ_MODEL,
       timeoutMs: parseTimeout(optionalValue(reader, "GROQ_TIMEOUT_MS")),
+    },
+    gemini: {
+      apiKey: optionalValue(reader, "GEMINI_API_KEY"),
+      model: optionalValue(reader, "GEMINI_MODEL") ?? DEFAULT_GEMINI_MODEL,
+      timeoutMs: parseTimeout(optionalValue(reader, "GEMINI_TIMEOUT_MS")),
     },
   };
 }

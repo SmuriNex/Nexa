@@ -8,6 +8,7 @@ import { DEFAULT_GROQ_MODEL, loadNexaConfig, type NexaConfig } from "../_shared/
 import { resolveContext } from "../_shared/context/context-resolver.ts";
 import { NexaCore } from "../_shared/core/nexa-core.ts";
 import { NexaError } from "../_shared/errors/nexa-error.ts";
+import { ProviderError } from "../_shared/errors/provider-error.ts";
 import { corsHeaders, ensureOriginAllowed } from "../_shared/http/cors.ts";
 import { buildInstructions } from "../_shared/instructions/instruction-builder.ts";
 import { resolveRequestId } from "../_shared/request/request-id.ts";
@@ -17,7 +18,10 @@ import { handleChat } from "../chat/index.ts";
 const quietLogger = () => undefined;
 
 function config(values: Record<string, string> = {}): NexaConfig {
-  return loadNexaConfig({ get: (name) => values[name] });
+  const explicitValues = "NEXA_PRIMARY_PROVIDER" in values || "NEXA_AI_PROVIDER" in values
+    ? values
+    : { NEXA_PRIMARY_PROVIDER: "mock", ...values };
+  return loadNexaConfig({ get: (name) => explicitValues[name] });
 }
 
 function mockCore(customConfig = config()): NexaCore {
@@ -82,13 +86,10 @@ test("rejeita context que não seja objeto", async () => {
   );
 });
 
-test("rejeita provider inexistente", async () => {
-  await expectCode(
-    mockCore(config({ NEXA_AI_PROVIDER: "inexistente" })).chat({
-      app: "nexa",
-      message: "Olá",
-    }),
-    "AI_PROVIDER_NOT_FOUND",
+test("rejeita provider inexistente", () => {
+  assert.throws(
+    () => config({ NEXA_PRIMARY_PROVIDER: "inexistente" }),
+    (error: unknown) => error instanceof NexaError && error.code === "CONFIGURATION_ERROR",
   );
 });
 
@@ -192,22 +193,38 @@ test("CORS rejeita origem não permitida", () => {
 });
 
 test("adaptador HTTP exige media type application/json exato", async () => {
-  const response = await handleChat(
-    new Request("http://local.test/chat", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/jsonp",
-        "x-request-id": "media-type-test",
-      },
-      body: JSON.stringify({ app: "nexa", message: "Olá" }),
-    }),
-  );
-  const body = await response.json();
+  const previousRuntime = Object.getOwnPropertyDescriptor(globalThis, "Deno");
+  Object.defineProperty(globalThis, "Deno", {
+    configurable: true,
+    value: {
+      env: { get: (name: string) => name === "NEXA_PRIMARY_PROVIDER" ? "mock" : undefined },
+    },
+  });
 
-  assert.equal(response.status, 415);
-  assert.equal(body.ok, false);
-  assert.equal(body.error.code, "UNSUPPORTED_MEDIA_TYPE");
-  assert.equal(body.request_id, "media-type-test");
+  try {
+    const response = await handleChat(
+      new Request("http://local.test/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/jsonp",
+          "x-request-id": "media-type-test",
+        },
+        body: JSON.stringify({ app: "nexa", message: "Olá" }),
+      }),
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 415);
+    assert.equal(body.ok, false);
+    assert.equal(body.error.code, "UNSUPPORTED_MEDIA_TYPE");
+    assert.equal(body.request_id, "media-type-test");
+  } finally {
+    if (previousRuntime) {
+      Object.defineProperty(globalThis, "Deno", previousRuntime);
+    } else {
+      Reflect.deleteProperty(globalThis, "Deno");
+    }
+  }
 });
 
 test("GroqProvider exige chave somente quando selecionado", async () => {
@@ -305,6 +322,44 @@ test("GroqProvider rejeita resposta inválida", async () => {
       requestId: "req-test",
     }),
     "AI_PROVIDER_INVALID_RESPONSE",
+  );
+});
+
+test("GroqProvider classifica falha ao consumir o corpo da resposta", async () => {
+  const request = {
+    app: "nexa" as const,
+    message: "Olá",
+    instructions: "Instruções",
+    requestId: "req-test",
+  };
+  const responseThatRejects = (error: unknown): Response =>
+    ({
+      ok: true,
+      json: () => Promise.reject(error),
+    }) as Response;
+  const timeoutProvider = new GroqProvider({
+    apiKey: "test-only-key",
+    model: DEFAULT_GROQ_MODEL,
+    timeoutMs: 30_000,
+    fetch: () =>
+      Promise.resolve(
+        responseThatRejects(new DOMException("timeout", "TimeoutError")),
+      ),
+  });
+  const networkProvider = new GroqProvider({
+    apiKey: "test-only-key",
+    model: DEFAULT_GROQ_MODEL,
+    timeoutMs: 30_000,
+    fetch: () => Promise.resolve(responseThatRejects(new TypeError("network"))),
+  });
+
+  await assert.rejects(
+    timeoutProvider.generate(request),
+    (error: unknown) => error instanceof ProviderError && error.kind === "TIMEOUT",
+  );
+  await assert.rejects(
+    networkProvider.generate(request),
+    (error: unknown) => error instanceof ProviderError && error.kind === "NETWORK_ERROR",
   );
 });
 

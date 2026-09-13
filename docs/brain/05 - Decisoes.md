@@ -64,10 +64,27 @@ Resultado, URLs e requisitos do Supabase Explorer em [[06 - Estado atual#Supabas
 
 O `package.json` usa a versão `0.1.0-dev`, preserva Supabase como dependência de desenvolvimento e não acrescenta SDK ou framework. Configuração pública de exemplo fica em `.env.example`; segredos reais permanecem fora do repositório.
 
+## 13/09/2026 — roteamento Groq/Gemini da Fase 1
+
+**Origem:** autorização posterior do responsável para continuar a Fase 1 com GeminiProvider e ProviderRouter, mantendo o núcleo stateless e sem Auth, banco, persistência, integrações reais, Tools, Consensus, interface ou deploy.
+
+| ID | Decisão |
+| --- | --- |
+| D25 | Inserir `ProviderRouter` entre o contrato `AIProvider` e os adaptadores concretos. O fluxo local configurado usa Groq como primary e Gemini como fallback, sem alterar a identidade ou o contrato público da Nexa. |
+| D26 | Implementar GeminiProvider pela API REST GenerateContent com `fetch` nativo, sem SDK, modelo configurável e padrão `gemini-3.8-flash`. A chave é enviada em header e nunca integra URL, logs ou respostas. |
+| D27 | Permitir somente um fallback sequencial para `RATE_LIMITED`, `TIMEOUT`, `NETWORK_ERROR`, `PROVIDER_UNAVAILABLE` e `INVALID_PROVIDER_RESPONSE`. Não criar repetição, recursão ou chamada simultânea. |
+| D28 | Não acionar fallback para `AUTH_ERROR`, `CONFIG_ERROR`, `PROVIDER_REJECTED` e `UNKNOWN_PROVIDER_ERROR`. Recusas e bloqueios de segurança são `PROVIDER_REJECTED`; a troca de provider não pode contornar uma decisão de segurança. |
+| D29 | Em `development` e `test`, um primary sem credencial pode ser ignorado em favor de um fallback configurado, com motivo explícito `PRIMARY_NOT_CONFIGURED`. Em produção, credencial ausente é erro de configuração e não aciona fallback. |
+| D30 | Manter MockProvider determinístico para testes, seleção explícita e funcionamento offline em `development`/`test`. A configuração precisa declarar um primary; Mock não é fallback silencioso e é proibido em produção. |
+| D31 | Expor na resposta pública somente provider/modelo efetivos e registrar nos logs apenas metadados operacionais seguros: primary, provider efetivo, uso e motivo categorizado do fallback. Não registrar mensagem, contexto, instruções, corpo bruto, chave ou stack do fornecedor. |
+| D32 | Manter Consensus entre modelos somente como possibilidade futura. O Router atual escolhe uma resposta e nunca consulta Groq e Gemini simultaneamente. |
+
+`NEXA_PRIMARY_PROVIDER` e `NEXA_FALLBACK_PROVIDER` passam a expressar o roteamento. `NEXA_AI_PROVIDER` fica como alias legado apenas na ausência da variável primary; conflito entre ambas ou repetição do mesmo provider nas duas posições é configuração inválida.
+
 ## Conflitos e pendências
 
 **Nenhum conflito documental anterior foi encontrado.** Não havia outras notas, decisões ou documentação Nexa a consolidar. O link de exemplo sem destino e o registro antigo do Obsidian são achados da inspeção, não decisões de produto conflitantes.
 
-A autorização da Fase 1 substituiu o limite operacional da antiga etapa exclusivamente documental, sem apagar seu registro histórico. Ela permitiu somente o incremento stateless descrito acima. A autorização posterior para Supabase Local também permanece delimitada. Tools continuam sendo possibilidade futura, sem autorização de implementação.
+A autorização da Fase 1 substituiu o limite operacional da antiga etapa exclusivamente documental, sem apagar seu registro histórico. Ela permitiu somente os incrementos stateless descritos acima. A autorização posterior para Supabase Local também permanece delimitada. Tools e Consensus continuam sendo possibilidades futuras, sem autorização de implementação.
 
 As escolhas técnicas restantes continuam pendentes em [[02 - Arquitetura#Cloud e decisões pendentes]] e nas seções “A definir” de [[03 - Ascent]] e [[04 - ERP]]. Para novos conflitos, registre data, fontes, pontos divergentes e situação da resolução, preservando a informação anterior.

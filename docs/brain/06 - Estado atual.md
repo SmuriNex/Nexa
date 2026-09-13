@@ -1,12 +1,14 @@
 # Estado atual
 
-**Data:** 12/09/2026  
-**Fase:** Fase 1 — fundação técnica, primeiro incremento concluído.  
-**Código da Nexa:** núcleo conversacional stateless implementado e validado localmente.
+**Data:** 13/09/2026
+
+**Fase:** Fase 1 — fundação técnica, roteamento Groq/Gemini implementado.
+
+**Código da Nexa:** núcleo conversacional stateless com ProviderRouter implementado e validado localmente.
 
 Este registro não marca toda a Fase 1 como concluída. Auth, usuários, persistência, integração real com produtos, cloud e segurança de produção continuam pendentes e dependem de nova autorização.
 
-## Núcleo conversacional stateless — 12/09/2026
+## Núcleo conversacional stateless — atualizado em 13/09/2026
 
 O fluxo funcional pedido está implementado:
 
@@ -17,7 +19,10 @@ POST /chat
   → Context Resolver
   → Instruction Builder
   → AIProvider
-  → MockProvider ou GroqProvider
+  → ProviderRouter
+      → primary GroqProvider
+      → fallback GeminiProvider em falha técnica elegível
+      → MockProvider para seleção explícita/offline
   → envelope JSON da Nexa
 ```
 
@@ -26,7 +31,7 @@ POST /chat
 ```text
 supabase/functions/
 ├── _shared/
-│   ├── ai/              # contrato, factory, Mock e Groq
+│   ├── ai/              # contrato, factory, Router, Mock, Groq e Gemini
 │   ├── config/          # configuração central
 │   ├── context/         # contextos nexa, ascent e erp
 │   ├── core/            # Nexa Core independente de HTTP/provider concreto
@@ -39,7 +44,7 @@ supabase/functions/
 │   └── validation/      # validação estrita do ChatRequest
 ├── chat/index.ts
 ├── health/index.ts
-├── tests/nexa-core.test.ts
+├── tests/               # Core, Groq/Gemini e roteamento
 └── deno.json
 ```
 
@@ -49,16 +54,21 @@ Arquivos auxiliares: `.env.example`, scripts de desenvolvimento em `package.json
 
 - `GET /functions/v1/health` retorna somente `ok`, serviço, versão, ambiente e request ID.
 - `POST /functions/v1/chat` aceita somente `nexa`, `ascent` ou `erp` e devolve envelope próprio da Nexa.
-- MockProvider é o padrão, funciona offline e retorna resposta determinística.
-- GroqProvider usa `fetch` nativo, endpoint fixo do fornecedor, modelo configurável, timeout e normalização segura; o Core não importa Groq.
+- ProviderRouter executa o primary e faz no máximo uma tentativa sequencial no fallback quando a falha é tecnicamente elegível; não há consultas simultâneas.
+- A configuração local usa Groq como primary e Gemini como fallback.
+- MockProvider funciona offline, retorna resposta determinística e permanece disponível por seleção explícita em `development`/`test` e nos testes; não existe fallback silencioso para Mock.
+- GroqProvider e GeminiProvider usam `fetch` nativo, endpoints fixos, modelos configuráveis, timeout, respostas normalizadas e erros categorizados; o Core não importa os providers concretos.
+- GeminiProvider usa a API REST GenerateContent e o modelo padrão configurável `gemini-3.8-flash`.
+- Fallback é elegível somente para rate limit, timeout, rede, indisponibilidade e resposta tecnicamente inválida. Erros de autenticação/configuração, recusa do provider e erros desconhecidos encerram a chamada sem fallback.
+- Em `development`/`test`, primary sem credencial pode seguir para um fallback configurado; em produção, essa ausência é erro de configuração.
 - A identidade da Nexa e os limites de Ascent/ERP ficam fora dos providers.
 - `context` é opcional, validado e tratado como dado não confiável; nenhum conteúdo do Vault é injetado.
 - `conversation_id` é aceito e validado, mas não é usado para histórico ou persistência.
 - Request ID aparece no header, no envelope e no log.
-- Logs registram apenas request ID, app, provider, duração, sucesso e código de erro.
+- Respostas e logs identificam provider/modelo efetivos e, nos logs, primary, uso e motivo seguro do fallback; conteúdo, prompt, corpos externos e segredos não são registrados.
 - CORS usa allowlist configurável e rejeita `*` na configuração da aplicação.
 
-Contratos, limites e diagrama estão em [[02 - Arquitetura]]. Decisões técnicas estão em [[05 - Decisoes#12/09/2026 — primeiro núcleo técnico da Fase 1]].
+Contratos, limites e diagrama estão em [[02 - Arquitetura]]. As decisões do Router estão em [[05 - Decisoes#13/09/2026 — roteamento Groq/Gemini da Fase 1]].
 
 ## Validações executadas
 
@@ -66,34 +76,35 @@ Contratos, limites e diagrama estão em [[02 - Arquitetura]]. Decisões técnica
 
 | Verificação | Resultado |
 | --- | --- |
-| Deno `check` 2.1.4 | Três entrypoints verificados: `health`, `chat` e testes. |
-| Deno lint | 18 arquivos aprovados. |
-| Deno fmt check | 19 arquivos aprovados. |
-| Testes Node | 20/20 aprovados, zero falhas, sem rede externa. |
+| Deno `check` 2.1.4 | Entrypoints e três arquivos de testes verificados. |
+| Deno lint | 24 arquivos aprovados. |
+| Deno fmt check | 25 arquivos aprovados. |
+| Testes Node | 69/69 aprovados, zero falhas, sem chamadas externas. |
 
-Os testes cobrem os três contextos, app inválido, mensagem vazia/grande, contexto inválido, provider inexistente, falha simulada, normalização, seleção de instrução, request ID, política CORS, media type e GroqProvider simulado para chave ausente, sucesso, HTTP não 2xx, resposta inválida, timeout e falha de rede.
+Os testes cobrem os contratos e contextos existentes, validação antes da factory, request ID, CORS e envelopes seguros; GroqProvider e GeminiProvider com sucesso e categorias de falha; e ProviderRouter com primary bem-sucedido, fallback elegível, erros não elegíveis, credencial ausente por ambiente, Mock offline, falha dos dois providers e garantia de uma única tentativa sequencial.
 
 ### Chamadas reais no Edge Runtime local
 
-As funções foram servidas com Supabase Edge Runtime 1.74.3, compatível com Deno 2.1.4. O primeiro ciclo usou `supabase functions serve --env-file .env.example`; depois o stack foi parado e iniciado de forma restrita ao projeto Nexa para restaurar o runtime persistente. As chamadas foram repetidas após a restauração.
+As funções foram servidas localmente com as credenciais no arquivo ignorado próprio das Edge Functions. As validações abaixo registram somente status, provider/modelo e latência; nenhuma resposta textual, corpo de erro ou credencial foi incluída neste documento.
 
 | Chamada | Resultado validado |
 | --- | --- |
-| `GET health` | HTTP 200, versão `0.1.0-dev`, ambiente `development`. |
-| `POST chat`, `app=nexa` | HTTP 200, provider/modelo `mock`, resposta determinística no contexto `nexa`. |
-| `POST chat`, `app=ascent` | HTTP 200, resposta determinística no contexto `ascent`. |
-| `POST chat`, `app=erp` | HTTP 200, resposta determinística no contexto `erp`. |
-| `POST chat`, app desconhecido | HTTP 400, `INVALID_APP`, envelope seguro e request ID. |
-| `POST chat`, origem permitida | HTTP 200. |
-| `POST chat`, origem não permitida | HTTP 403, `ORIGIN_NOT_ALLOWED`. |
+| Groq, `app=nexa` | HTTP 200 em 1.014 ms; provider `groq`, modelo `openai/gpt-oss-120b`. |
+| Groq, `app=ascent` | HTTP 200 em 969 ms; provider `groq`, modelo `openai/gpt-oss-120b`. |
+| Gemini, `app=nexa` | Upstream HTTP 503 após 4.722 ms. |
+| Gemini, `app=erp` | Upstream HTTP 503 após 2.026 ms. |
+| Gemini, repetição controlada de `app=nexa` | Upstream HTTP 503 após 3.415 ms; sem resposta utilizável. |
+| Fallback controlado | O primary Groq simulado foi chamado exatamente uma vez; o Router acionou Gemini e encerrou com upstream HTTP 503 após 5.938 ms. Não houve repetição nem loop. |
 
-IDs válidos enviados nos testes foram preservados. Os logs observados continham somente metadados operacionais; mensagem, contexto, prompt e segredo não apareceram.
+O Groq concluiu as chamadas dos dois contextos testados. As tentativas Gemini chegaram ao fornecedor, mas não produziram resposta utilizável devido ao HTTP 503, compatível com indisponibilidade externa transitória. Por isso, a integração e a classificação segura desse erro foram exercitadas, mas uma resposta real bem-sucedida do Gemini permanece pendente de nova disponibilidade do serviço.
 
 O plugin CORS do Kong local interceptou `OPTIONS` e acrescentou `Access-Control-Allow-Origin: *` às respostas do gateway, inclusive quando o handler define uma origem exata. A função ainda recusou o `POST` de origem não autorizada. Essa política do gateway é uma limitação local verificada e precisa ser revista antes de qualquer uso cloud.
 
-## Groq
+## Roteamento e providers
 
-**GroqProvider implementado; teste externo não executado por ausência de credencial.** A ausência de `GROQ_API_KEY` não afeta health nem o MockProvider. Nenhuma chave foi solicitada, criada ou impressa. O comportamento do provider foi validado apenas com `fetch` injetado nos testes, sem consumo da API externa.
+**GroqProvider validado com respostas reais; GeminiProvider implementado e alcançou o serviço, que respondeu HTTP 503 nas tentativas controladas.** O 503 é tratado como indisponibilidade técnica elegível para fallback quando ocorre no primary. A validação controlada provou que o Router chama o primary uma vez e o fallback uma vez; como o Gemini também estava indisponível, o Router devolveu erro seguro e encerrou.
+
+`RATE_LIMITED`, `TIMEOUT`, `NETWORK_ERROR`, `PROVIDER_UNAVAILABLE` e `INVALID_PROVIDER_RESPONSE` são elegíveis. `AUTH_ERROR`, `CONFIG_ERROR`, `PROVIDER_REJECTED` e `UNKNOWN_PROVIDER_ERROR` não são elegíveis. Consensus entre providers não foi implementado e nenhuma chamada paralela é feita.
 
 ## Supabase Local
 
@@ -107,7 +118,7 @@ O plugin CORS do Kong local interceptou `OPTIONS` e acrescentou `Access-Control-
 | Serviço | Porta / endereço local | Situação final |
 | --- | --- | --- |
 | API / Functions | `http://127.0.0.1:54421` | Ativa; health e chat respondendo. |
-| DB | `postgresql://postgres:postgres@127.0.0.1:54422/postgres` | Ativo e saudável. |
+| DB | `127.0.0.1:54422` | Ativo e saudável. |
 | Studio | `http://127.0.0.1:54423` | Ativo e saudável. |
 | E-mail local | `http://127.0.0.1:54424` | Ativo e saudável. |
 | Analytics | `http://127.0.0.1:54427` | Ativo e saudável. |
@@ -132,9 +143,9 @@ Não existem `conversations`, `messages`, `memory`, `users`, `tools`, `ascent_*`
 
 - Nenhuma dependência foi adicionada. `supabase` foi preservado como `devDependency` existente.
 - Deno 2.1.4 foi executado por `npx --yes` para ferramentas de qualidade, sem ser incluído no manifesto.
-- Nenhum framework web ou SDK de IA foi instalado.
+- Nenhum framework web ou SDK de IA foi instalado; ambos os providers usam `fetch` nativo.
 - `.env` e `.env.*` continuam ignorados; somente `.env.example`, com chave vazia, é liberado para versionamento.
-- A inspeção de segredos não encontrou credencial real nos arquivos criados.
+- As credenciais locais dos providers permanecem no `.env` ignorado das Edge Functions; nenhum valor foi registrado nesta documentação.
 
 ## Limites atuais
 
@@ -142,7 +153,8 @@ Não existem `conversations`, `messages`, `memory`, `users`, `tools`, `ascent_*`
 - CORS protege o uso em navegadores, mas não substitui Auth, rate limit ou controle de abuso; o gateway local publica a API na interface Docker configurada.
 - Não há usuário, separação por identidade, conversa, histórico ou memória persistente.
 - Ascent e ERP são somente contextos de instrução; não existe integração ou dado real.
-- Quando Groq for habilitado, mensagem e `context` serão enviados ao provider externo; privacidade e redação precisam ser definidas antes de usar dados reais.
+- Quando Groq ou Gemini é habilitado, mensagem e `context` são enviados ao provider externo escolhido; privacidade e redação precisam ser definidas antes de usar dados reais.
+- O Gemini respondeu HTTP 503 nas tentativas reais desta validação. Esse resultado é compatível com indisponibilidade externa transitória e ainda falta comprovar uma resposta Gemini bem-sucedida quando o serviço estiver disponível.
 - Sem `Content-Length`, o adaptador precisa carregar o corpo antes de verificar os 32 KiB. Antes de exposição externa, convém impor o limite também no gateway ou usar leitura limitada por stream.
 - Não existem Tools, ações em produtos, frontend, HUD, partículas, WebGL, voz, escuta, agentes, controle do computador, Codex ou Jarvis.
 - Nenhum login, link, deploy ou recurso cloud foi realizado.
@@ -162,6 +174,7 @@ Somente após nova autorização:
 3. decidir como o contexto autorizado será obtido, minimizado e redigido antes do envio a providers;
 4. integrar Ascent e ERP em incrementos próprios, sem acesso irrestrito;
 5. preparar ambiente cloud, observabilidade e deploy somente depois da revisão de segurança;
-6. deixar HUD e recursos visuais para a fase visual já documentada.
+6. avaliar Consensus somente em fase futura própria, caso seja autorizado e tenha política de custo, latência e segurança definida;
+7. deixar HUD e recursos visuais para a fase visual já documentada.
 
 Este incremento termina neste relatório. Não iniciar autenticação, persistência ou integração real automaticamente.

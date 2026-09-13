@@ -1,6 +1,6 @@
 # Nexa
 
-A **Nexa** é a inteligência artificial da **NexPoint**. O primeiro incremento da Fase 1 implementa um núcleo conversacional stateless em Supabase Edge Functions, com `MockProvider` offline e `GroqProvider` preparado para configuração.
+A **Nexa** é a inteligência artificial da **NexPoint**. A Fase 1 mantém um núcleo conversacional stateless em Supabase Edge Functions e agora roteia providers por uma política explícita: Groq como primary, Gemini como fallback técnico e Mock para testes ou desenvolvimento offline.
 
 ## Desenvolvimento local
 
@@ -16,7 +16,7 @@ O stack persistente serve as funções em:
 - `GET http://127.0.0.1:54421/functions/v1/health`
 - `POST http://127.0.0.1:54421/functions/v1/chat`
 
-Exemplo de chat com o provider Mock padrão:
+Exemplo de chat com a configuração local ativa:
 
 ```powershell
 $body = @{ app = "nexa"; message = "Olá Nexa" } | ConvertTo-Json -Compress
@@ -26,13 +26,13 @@ Invoke-RestMethod -Method Post `
   -Body ([Text.Encoding]::UTF8.GetBytes($body))
 ```
 
-Para desenvolvimento com recarga local e valores explícitos do exemplo:
+Para desenvolvimento com recarga local, o Supabase carrega automaticamente o arquivo ignorado `supabase/functions/.env`:
 
 ```powershell
-npx.cmd supabase functions serve --env-file .env.example
+npm.cmd run functions:serve
 ```
 
-Para mudar a configuração local, copie `.env.example` para `.env`, mantenha esse arquivo ignorado e sirva com `npx.cmd supabase functions serve --env-file .env`. Não versione chaves. O Mock funciona sem internet ou credencial; `NEXA_AI_PROVIDER=groq` exige `GROQ_API_KEY` no ambiente seguro do runtime.
+`.env.example` documenta os nomes sem valores reais. Use `NEXA_PRIMARY_PROVIDER` e `NEXA_FALLBACK_PROVIDER` no arquivo local seguro; `NEXA_AI_PROVIDER` permanece apenas como alias legado. Para trabalhar offline, selecione `NEXA_PRIMARY_PROVIDER=mock` e não configure fallback. Nunca versione chaves.
 
 ## Documentação
 

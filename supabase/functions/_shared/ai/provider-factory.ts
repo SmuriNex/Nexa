@@ -1,20 +1,27 @@
-import type { NexaConfig } from "../config/config.ts";
-import { NexaError } from "../errors/nexa-error.ts";
+import { isDevelopmentEnvironment, type NexaConfig, type ProviderName } from "../config/config.ts";
+import { createGeminiProvider } from "./gemini-provider.ts";
 import { createGroqProvider } from "./groq-provider.ts";
 import { MockProvider } from "./mock-provider.ts";
 import type { AIProvider } from "./provider.ts";
+import { ProviderRouter } from "./provider-router.ts";
 
-export function createAIProvider(config: NexaConfig): AIProvider {
-  switch (config.aiProvider) {
+function createProvider(name: ProviderName, config: NexaConfig): AIProvider {
+  switch (name) {
     case "mock":
       return new MockProvider();
     case "groq":
       return createGroqProvider(config);
-    default:
-      throw new NexaError(
-        "AI_PROVIDER_NOT_FOUND",
-        "O provedor de IA configurado não é reconhecido.",
-        500,
-      );
+    case "gemini":
+      return createGeminiProvider(config);
   }
+}
+
+export function createAIProvider(config: NexaConfig): AIProvider {
+  return new ProviderRouter({
+    primary: createProvider(config.primaryProvider, config),
+    ...(config.fallbackProvider
+      ? { fallback: createProvider(config.fallbackProvider, config) }
+      : {}),
+    allowUnconfiguredPrimaryFallback: isDevelopmentEnvironment(config.environment),
+  });
 }

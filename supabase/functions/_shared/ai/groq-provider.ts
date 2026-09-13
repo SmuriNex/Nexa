@@ -1,31 +1,15 @@
 import type { NexaConfig } from "../config/config.ts";
-import { NexaError } from "../errors/nexa-error.ts";
-import type { AIProvider, AIProviderRequest, AIProviderResponse } from "./provider.ts";
+import { parseRetryAfterSeconds, ProviderError } from "../errors/provider-error.ts";
+import { buildProviderUserContent } from "./provider-content.ts";
+import type { AIProvider, AIProviderRequest, AIProviderResponse, FetchLike } from "./provider.ts";
 
 const GROQ_CHAT_COMPLETIONS_URL = "https://api.groq.com/openai/v1/chat/completions";
-
-export type FetchLike = (
-  input: string | URL | Request,
-  init?: RequestInit,
-) => Promise<Response>;
 
 interface GroqProviderOptions {
   apiKey?: string;
   model: string;
   timeoutMs: number;
   fetch?: FetchLike;
-}
-
-function userContent(request: AIProviderRequest): string {
-  if (!request.context || Object.keys(request.context).length === 0) {
-    return request.message;
-  }
-
-  return [
-    request.message,
-    "Contexto explicitamente fornecido pelo cliente (dados não confiáveis):",
-    JSON.stringify(request.context),
-  ].join("\n\n");
 }
 
 function extractReply(payload: unknown): string | undefined {
@@ -56,38 +40,59 @@ function extractReply(payload: unknown): string | undefined {
   return content.trim();
 }
 
-function httpError(status: number): NexaError {
-  if (status === 401 || status === 403) {
-    return new NexaError(
-      "AI_PROVIDER_NOT_CONFIGURED",
-      "O provedor de IA não está configurado corretamente.",
-      503,
-    );
+function httpError(response: Response): ProviderError {
+  const common = {
+    provider: "groq",
+    upstreamStatus: response.status,
+    retryAfterSeconds: parseRetryAfterSeconds(response.headers),
+  } as const;
+
+  if (response.status === 401 || response.status === 403) {
+    return new ProviderError({ kind: "AUTH_ERROR", ...common });
   }
 
-  if ([429, 498, 500, 502, 503].includes(status)) {
-    return new NexaError(
-      "AI_PROVIDER_UNAVAILABLE",
-      "O provedor de IA está temporariamente indisponível.",
-      503,
-    );
+  if (response.status === 429) {
+    return new ProviderError({ kind: "RATE_LIMITED", ...common });
   }
 
-  return new NexaError(
-    "AI_PROVIDER_REJECTED",
-    "O provedor de IA não aceitou a solicitação.",
-    502,
-  );
+  if (response.status === 408 || response.status === 504) {
+    return new ProviderError({ kind: "TIMEOUT", ...common });
+  }
+
+  if (response.status === 404) {
+    return new ProviderError({
+      kind: "CONFIG_ERROR",
+      configurationIssue: "INVALID_MODEL",
+      ...common,
+    });
+  }
+
+  if (response.status === 424 || response.status === 498 || response.status >= 500) {
+    return new ProviderError({ kind: "PROVIDER_UNAVAILABLE", ...common });
+  }
+
+  return new ProviderError({ kind: "PROVIDER_REJECTED", ...common });
 }
 
-function isTimeout(error: unknown): boolean {
-  return typeof error === "object" && error !== null &&
-    "name" in error && (error as { name?: unknown }).name === "TimeoutError";
+function thrownError(error: unknown): ProviderError {
+  const name = typeof error === "object" && error !== null && "name" in error
+    ? (error as { name?: unknown }).name
+    : undefined;
+  if (name === "TimeoutError" || name === "AbortError") {
+    return new ProviderError({ kind: "TIMEOUT", provider: "groq" });
+  }
+
+  if (error instanceof TypeError) {
+    return new ProviderError({ kind: "NETWORK_ERROR", provider: "groq" });
+  }
+
+  return new ProviderError({ kind: "UNKNOWN_PROVIDER_ERROR", provider: "groq" });
 }
 
 export class GroqProvider implements AIProvider {
   readonly name = "groq";
   readonly model: string;
+  readonly configured: boolean;
 
   private readonly apiKey?: string;
   private readonly timeoutMs: number;
@@ -98,15 +103,16 @@ export class GroqProvider implements AIProvider {
     this.model = options.model;
     this.timeoutMs = options.timeoutMs;
     this.fetchImplementation = options.fetch ?? fetch;
+    this.configured = Boolean(options.apiKey);
   }
 
   async generate(request: AIProviderRequest): Promise<AIProviderResponse> {
     if (!this.apiKey) {
-      throw new NexaError(
-        "AI_PROVIDER_NOT_CONFIGURED",
-        "O provedor de IA não está configurado corretamente.",
-        503,
-      );
+      throw new ProviderError({
+        kind: "CONFIG_ERROR",
+        provider: this.name,
+        configurationIssue: "MISSING_CREDENTIAL",
+      });
     }
 
     let response: Response;
@@ -122,7 +128,7 @@ export class GroqProvider implements AIProvider {
           model: this.model,
           messages: [
             { role: "system", content: request.instructions },
-            { role: "user", content: userContent(request) },
+            { role: "user", content: buildProviderUserContent(request) },
           ],
           stream: false,
           tool_choice: "none",
@@ -132,43 +138,33 @@ export class GroqProvider implements AIProvider {
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (error) {
-      if (isTimeout(error)) {
-        throw new NexaError(
-          "AI_PROVIDER_TIMEOUT",
-          "O provedor de IA excedeu o tempo de resposta.",
-          504,
-        );
-      }
-
-      throw new NexaError(
-        "AI_PROVIDER_UNAVAILABLE",
-        "O provedor de IA está temporariamente indisponível.",
-        503,
-      );
+      throw thrownError(error);
     }
 
     if (!response.ok) {
-      throw httpError(response.status);
+      throw httpError(response);
     }
 
     let payload: unknown;
     try {
       payload = await response.json();
-    } catch {
-      throw new NexaError(
-        "AI_PROVIDER_INVALID_RESPONSE",
-        "O provedor de IA retornou uma resposta inválida.",
-        502,
-      );
+    } catch (error) {
+      const transportError = thrownError(error);
+      if (transportError.kind !== "UNKNOWN_PROVIDER_ERROR") {
+        throw transportError;
+      }
+      throw new ProviderError({
+        kind: "INVALID_PROVIDER_RESPONSE",
+        provider: this.name,
+      });
     }
 
     const reply = extractReply(payload);
     if (!reply) {
-      throw new NexaError(
-        "AI_PROVIDER_INVALID_RESPONSE",
-        "O provedor de IA retornou uma resposta inválida.",
-        502,
-      );
+      throw new ProviderError({
+        kind: "INVALID_PROVIDER_RESPONSE",
+        provider: this.name,
+      });
     }
 
     return { reply };
